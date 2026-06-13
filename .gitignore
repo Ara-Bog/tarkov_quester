@@ -1,0 +1,22 @@
+# OS / editor
+.DS_Store
+Thumbs.db
+*~
+~$*
+
+# Claude Code project dir
+.claude/
+
+# Node
+node_modules/
+npm-debug.log*
+yarn-error.log
+
+# Build artifacts (регенерируются: node build/fetch.mjs, node build/items.mjs)
+build/tasks_raw.json
+
+# Scratch / temp
+_*.html
+build/_*.mjs
+build/_*.txt
+*.log

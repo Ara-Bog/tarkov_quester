@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Квестовик — планировщик рейда EFT</title>
+  <link rel="stylesheet" href="styles.css" />
+  <link rel="preconnect" href="https://assets.tarkov.dev" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand" id="brand" title="На главную">
+      <h1>Квестовик</h1>
+      <span class="meta" id="meta"></span>
+    </div>
+    <nav class="tabs">
+      <button class="tab active" data-view="mine">Мои квесты</button>
+      <button class="tab" data-view="all">Все квесты</button>
+      <button class="tab" data-view="planner">План рейда</button>
+      <button class="tab" data-view="finder">Список находок</button>
+      <button class="tab" data-view="kappa">Каппа</button>
+    </nav>
+  </header>
+
+  <main class="wrap">
+    <!-- Filters (quest views) -->
+    <section class="filters" id="filters">
+      <input type="text" id="f-search" placeholder="Поиск: квест, задача, предмет…" />
+      <select id="f-map"><option value="">Все локации</option></select>
+      <select id="f-trader"><option value="">Все торговцы</option></select>
+      <select id="f-action"><option value="">Любое действие</option></select>
+      <select id="f-status">
+        <option value="">Любой статус</option>
+        <option value="available">Доступные</option>
+        <option value="locked">Заблокированные</option>
+        <option value="completed">Выполненные</option>
+        <option value="failed">Проваленные</option>
+      </select>
+      <select id="f-faction">
+        <option value="">Все фракции</option>
+        <option value="USEC">USEC</option>
+        <option value="BEAR">BEAR</option>
+      </select>
+      <label class="chk"><input type="checkbox" id="f-kappa" /> Только Каппа</label>
+      <label class="chk"><input type="checkbox" id="f-plan" /> Только в плане</label>
+      <label class="chk"><input type="checkbox" id="f-showmine" /> Показывать мои квесты</label>
+      <label class="chk"><input type="checkbox" id="f-showdone" /> Показать выполненные</label>
+      <button class="btn-ghost" id="f-reset">Сбросить</button>
+    </section>
+
+    <div class="stats" id="stats"></div>
+
+    <section id="view-home" class="hidden">
+      <div class="home">
+        <h2>Квестовик — планировщик рейда Escape from Tarkov</h2>
+        <p class="lead">Помогает собираться в рейд осмысленно: что взять с собой, что найти и сдать,
+        какие квесты сейчас доступны и куда идти — всё в разрезе локаций.</p>
+
+        <h3>Что внутри</h3>
+        <ul>
+          <li><b>Мои квесты</b> — только активные квесты. При выполнении следующие по ветке
+          добавляются автоматически. Сверху — быстрая настройка прогресса, если вы уже в середине игры.</li>
+          <li><b>Все квесты</b> — полный список с фильтрами и сортировкой, зависимостями
+          (что требует / открывает / провалит) и кнопкой добавить «в мои квесты».</li>
+          <li><b>План рейда</b> — отмечаете квесты, и приложение собирает по локациям, что
+          <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>.</li>
+          <li><b>Список находок</b> — личные списки предметов по группам с описанием и количеством.</li>
+          <li><b>Каппа</b> — отслеживание предметов для контейнера Каппа (квест «Коллекционер»).</li>
+        </ul>
+
+        <h3>Зачем это нужно</h3>
+        <p>Перед рейдом удобно за минуту понять: какие квесты я могу сделать на этой локации,
+        что для них взять (маркеры, камеры, ключи, предметы для закладки), что нужно найти и сдать,
+        и сколько ещё осталось — чтобы не таскать лишнее и не забывать цели.</p>
+
+        <h3>Предложения по улучшению</h3>
+        <p>Идеи и замечания присылайте на <a href="mailto:mixic-pro@mail.ru">mixic-pro@mail.ru</a>.</p>
+
+        <h3>Данные</h3>
+        <p>Все данные по квестам, предметам и иконкам берутся из открытого проекта
+        <a href="https://tarkov.dev" target="_blank" rel="noopener">tarkov.dev</a>.
+        Прогресс хранится локально в вашем браузере (IndexedDB) — сервера и регистрации нет.</p>
+      </div>
+    </section>
+    <section id="view-mine"></section>
+    <section id="view-all" class="hidden"></section>
+    <section id="view-planner" class="hidden"></section>
+    <section id="view-finder" class="hidden"></section>
+    <section id="view-kappa" class="hidden"></section>
+  </main>
+
+  <!-- Cookie notice (first visit) -->
+  <div id="cookie-bar" class="hidden">
+    <span>Сайт использует куки (а кто их не использует). Там буквально 1 запись, чтобы показать эту плашку :)</span>
+    <button id="cookie-ok" class="btn-gold">Ок</button>
+  </div>
+
+  <!-- Lightbox for full-size item images -->
+  <div id="lightbox" class="hidden">
+    <div class="lb-inner">
+      <img id="lb-img" src="" alt="" />
+      <div id="lb-name"></div>
+    </div>
+  </div>
+
+  <div id="toast"></div>
+
+  <!-- data fallback for file:// usage -->
+  <script src="data/quests-data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
