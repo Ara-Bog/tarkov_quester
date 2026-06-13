@@ -23,14 +23,14 @@ const QUERY = `{
     objectives {
       id type description optional
       maps { id name }
-      ... on TaskObjectiveItem { items { id name shortName iconLink image512pxLink } count foundInRaid requiredKeys { id name } zones { map { name } position { x z } } }
-      ... on TaskObjectiveMark { markerItem { id name shortName iconLink image512pxLink } requiredKeys { id name } zones { map { name } position { x z } } }
-      ... on TaskObjectiveQuestItem { questItem { id name iconLink image512pxLink } count zones { map { name } position { x z } } possibleLocations { map { name } positions { x z } } }
-      ... on TaskObjectiveShoot { targetNames count shotType usingWeapon { id name shortName iconLink image512pxLink } requiredKeys { id name } zones { map { name } position { x z } } }
+      ... on TaskObjectiveItem { items { id name shortName iconLink image512pxLink } count foundInRaid requiredKeys { id name } zones { map { name } position { x y z } } }
+      ... on TaskObjectiveMark { markerItem { id name shortName iconLink image512pxLink } requiredKeys { id name } zones { map { name } position { x y z } } }
+      ... on TaskObjectiveQuestItem { questItem { id name iconLink image512pxLink } count zones { map { name } position { x y z } } possibleLocations { map { name } positions { x y z } } }
+      ... on TaskObjectiveShoot { targetNames count shotType usingWeapon { id name shortName iconLink image512pxLink } requiredKeys { id name } zones { map { name } position { x y z } } }
       ... on TaskObjectiveExtract { exitName requiredKeys { id name } }
-      ... on TaskObjectiveUseItem { useAny { id name shortName iconLink image512pxLink } count zones { map { name } position { x z } } }
+      ... on TaskObjectiveUseItem { useAny { id name shortName iconLink image512pxLink } count zones { map { name } position { x y z } } }
       ... on TaskObjectiveBuildItem { item { id name shortName iconLink image512pxLink } }
-      ... on TaskObjectiveBasic { requiredKeys { id name } zones { map { name } position { x z } } }
+      ... on TaskObjectiveBasic { requiredKeys { id name } zones { map { name } position { x y z } } }
     }
   }
 }`;

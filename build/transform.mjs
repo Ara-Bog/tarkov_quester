@@ -153,11 +153,11 @@ function classify(o) {
       break;
   }
 
-  // координаты цели (для маркеров на карте): zones и possibleLocations
+  // координаты цели (для маркеров на карте): zones и possibleLocations (x,z + высота y для этажа)
   const r1 = (n) => Math.round(n * 10) / 10;
   const coords = [];
-  for (const zn of o.zones || []) if (zn && zn.position && zn.map) coords.push({ m: mapId(zn.map.name), x: r1(zn.position.x), z: r1(zn.position.z) });
-  for (const pl of o.possibleLocations || []) if (pl && pl.map) for (const p of pl.positions || []) coords.push({ m: mapId(pl.map.name), x: r1(p.x), z: r1(p.z) });
+  for (const zn of o.zones || []) if (zn && zn.position && zn.map) coords.push({ m: mapId(zn.map.name), x: r1(zn.position.x), z: r1(zn.position.z), y: r1(zn.position.y) });
+  for (const pl of o.possibleLocations || []) if (pl && pl.map) for (const p of pl.positions || []) coords.push({ m: mapId(pl.map.name), x: r1(p.x), z: r1(p.z), y: r1(p.y) });
   if (coords.length) out.coords = coords;
 
   return out;

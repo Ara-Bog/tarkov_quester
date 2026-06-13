@@ -20,6 +20,9 @@
 }
 
 * { box-sizing: border-box; }
+/* всегда резервируем место под вертикальный скролл — страница не дёргается по горизонтали
+   при появлении/исчезновении полосы (в т.ч. при переключении карт) */
+html { scrollbar-gutter: stable; overflow-y: scroll; }
 html, body { margin: 0; padding: 0; }
 body {
   background: var(--bg);
@@ -207,10 +210,15 @@ button { font-family: inherit; cursor: pointer; }
 .marker .m-txt b { color: var(--gold); font-weight: 600; }
 .marker .m-track { flex: none; }
 
-/* done objective strike (planner lists) */
+/* task list: чекбокс/степпер слева, текст справа (фиксированная позиция контрола) */
+.ol { list-style: none; margin: 0; padding-left: 0; }
+.ol li { display: flex; align-items: flex-start; gap: 7px; margin-bottom: 3px; font-size: 12px; color: var(--txt-dim); }
+.ol li .a { color: var(--txt); font-weight: 600; }
+.li-ctrl { flex: none; margin-top: 1px; display: inline-flex; align-items: center; }
+.li-txt { flex: 1; min-width: 0; }
 .ol li.li-done { color: var(--txt-mut); }
-.ol li.li-done .a, .ol li.li-done { text-decoration: line-through; text-decoration-color: var(--txt-mut); }
-.ol li.li-done .li-track, .ol li.li-done .obj-guide { text-decoration: none; }
+.ol li.li-done .li-txt, .ol li.li-done .li-txt .a { text-decoration: line-through; text-decoration-color: var(--txt-mut); }
+.ol li.li-done .obj-guide { text-decoration: none; }
 .obj-guide { color: var(--gold); font-size: 11px; white-space: nowrap; }
 .obj-guide:hover { text-decoration: underline; }
 .ol li.li-flash { background: rgba(199,169,107,.25); border-radius: 4px; }
@@ -223,8 +231,10 @@ button { font-family: inherit; cursor: pointer; }
 .map-svg { line-height: 0; }
 .map-svg svg { width: 100%; height: auto; display: block; pointer-events: none; }
 .map-loading { padding: 40px; text-align: center; color: var(--txt-mut); font-size: 13px; }
-.pin-dot { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--c); border: 2px solid #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 35%, transparent), 0 1px 4px #000a; transform: translate(-50%, -50%); cursor: pointer; z-index: 5; }
+.pin-dot { position: absolute; width: 16px; height: 16px; border-radius: 50%; background: var(--c); border: 2px solid #fff; box-shadow: 0 0 0 3px color-mix(in srgb, var(--c) 35%, transparent), 0 1px 4px #000a; transform: translate(-50%, -50%); transform-origin: center; cursor: pointer; z-index: 5; transition: transform .18s ease, opacity .18s ease; }
 .pin-dot:hover { z-index: 9; background: #fff; border-color: var(--c); }
+/* наведение на квест в списке — увеличиваем его маркеры и убираем затемнение */
+.pin-dot.pin-hl { transform: translate(-50%, -50%) scale(3); opacity: 1 !important; z-index: 20; }
 .map-zoom { position: absolute; top: 8px; right: 8px; z-index: 12; display: flex; flex-direction: column; gap: 4px; }
 .map-zoom button { width: 30px; height: 30px; border-radius: 6px; border: 1px solid var(--line-2); background: var(--bg-3); color: var(--txt); font-size: 17px; line-height: 1; }
 .map-zoom button:hover { color: var(--gold); border-color: var(--gold-dim); }
@@ -237,10 +247,16 @@ button { font-family: inherit; cursor: pointer; }
 .map-floors button.active { background: var(--gold); color: #1a1a1a; border-color: var(--gold); font-weight: 700; }
 
 /* extract & boss pins */
-/* выход — треугольник (CSS-фигура, без зависимости от шрифта) */
-.pin-ex { position: absolute; width: 0; height: 0; border-left: 7px solid transparent; border-right: 7px solid transparent; border-bottom: 12px solid var(--c); transform: translate(-50%, -60%); filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); cursor: default; z-index: 4; }
+/* маркеры выходов и боссов с подписями */
+.mk { position: absolute; z-index: 4; pointer-events: none; }
+.mk .mk-ico { position: absolute; left: 0; top: 0; }
+.mk .mk-name { position: absolute; left: 9px; top: -8px; white-space: nowrap; font-size: 10.5px; line-height: 16px; padding: 0 5px; border-radius: 3px; background: rgba(8,10,12,.62); text-shadow: 0 0 2px #000; }
+/* выход — треугольник, цвет по фракции */
+.mk-ex .mk-ico { width: 0; height: 0; border-left: 6px solid transparent; border-right: 6px solid transparent; border-bottom: 11px solid var(--c); transform: translate(-50%, -55%); filter: drop-shadow(0 0 1px #000) drop-shadow(0 0 1px #000); }
+.mk-ex .mk-name { color: var(--c); }
 /* спавн босса — красный ромб */
-.pin-boss { position: absolute; width: 12px; height: 12px; background: #ff3b3b; border: 2px solid #fff; transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 3px #000; cursor: default; z-index: 4; }
+.mk-boss .mk-ico { width: 12px; height: 12px; background: #ff3b3b; border: 2px solid #fff; transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 3px #000; }
+.mk-boss .mk-name { color: #ff9a9a; font-weight: 700; }
 .boss-legend { font-size: 12.5px; color: var(--txt-dim); margin: 0 0 10px; }
 .boss-legend .muted { color: var(--txt-mut); }
 
@@ -283,9 +299,32 @@ button { font-family: inherit; cursor: pointer; }
 .obj-by-quest { border-top: 1px dashed var(--line); padding-top: 10px; }
 .obj-by-quest .qg { margin-bottom: 8px; }
 .obj-by-quest .qg > .qt { font-weight: 700; font-size: 12.5px; color: var(--gold); margin-bottom: 3px; }
-.obj-by-quest .ol { margin: 0; padding-left: 18px; }
-.obj-by-quest .ol li { font-size: 12px; color: var(--txt-dim); margin-bottom: 2px; }
-.obj-by-quest .ol li .a { color: var(--txt); font-weight: 600; }
+
+/* доп-блоки под задачами локации: «Найти для квестов» / «Список находок» (свёртываются свитчем) */
+.loc-extra { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 10px; }
+.le-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.le-head .sec-label { margin: 0; }
+.le-body { margin-top: 8px; }
+.le-body[hidden] { display: none; }
+.map-quests .loc-extra .fg-items li { font-size: 12px; }
+.map-quests .loc-extra .fg-items li img { width: 24px; height: 24px; }
+/* отдельная карточка «Найти в рейде» под основной в боковой панели */
+.findings-loc-card { margin-top: 12px; border-color: var(--amber); }
+.findings-loc-card .fg-items { margin-bottom: 0; }
+/* пометки (группа находок / квест) в общем списке «Найти в рейде» */
+.findings-loc-card .fg-items li .fg-tag,
+.map-quests .fg-items li .fg-tag {
+	margin-left: auto; font-size: 10.5px; color: #1a1a1a; background: var(--amber);
+	padding: 1px 7px; border-radius: 10px; font-weight: 700; white-space: nowrap;
+}
+.fg-items li .fg-tag.quest { background: var(--gold); }
+/* свитч-тумблер */
+.switch { position: relative; display: inline-flex; flex: 0 0 auto; width: 34px; height: 18px; cursor: pointer; }
+.switch input { position: absolute; opacity: 0; width: 100%; height: 100%; margin: 0; cursor: pointer; }
+.switch .sw { position: absolute; inset: 0; background: var(--line-2); border-radius: 999px; transition: background .15s ease; }
+.switch .sw::before { content: ""; position: absolute; top: 2px; left: 2px; width: 14px; height: 14px; background: #e8e8e8; border-radius: 50%; transition: transform .15s ease; }
+.switch input:checked + .sw { background: var(--green); }
+.switch input:checked + .sw::before { transform: translateX(16px); }
 
 .summary-card { background: var(--bg-2); border: 1px solid var(--gold-dim); border-radius: var(--radius); padding: 14px; }
 .summary-card h3 { margin: 0 0 10px; font-size: 14px; color: var(--gold); }
@@ -394,8 +433,7 @@ button { font-family: inherit; cursor: pointer; }
 .obj-track { grid-column: 1 / -1; margin-top: 6px; padding-top: 7px; border-top: 1px dashed var(--line); }
 .obj.obj-done { opacity: .6; }
 .obj.obj-done .desc { text-decoration: line-through; text-decoration-color: var(--txt-mut); }
-.track-chk { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--txt-dim); cursor: pointer; user-select: none; }
-.track-chk input { accent-color: var(--green); width: 15px; height: 15px; }
+.track-chk { accent-color: var(--green); width: 16px; height: 16px; cursor: pointer; flex: none; margin: 0; }
 .stepper { display: inline-flex; align-items: center; gap: 4px; font-size: 12.5px; color: var(--txt-dim); }
 .stepper .st-btn { width: 24px; height: 24px; border-radius: 5px; border: 1px solid var(--line-2); background: var(--bg-3); color: var(--txt); font-size: 15px; line-height: 1; padding: 0; }
 .stepper .st-btn:hover { border-color: var(--gold-dim); color: var(--gold); }
@@ -403,7 +441,6 @@ button { font-family: inherit; cursor: pointer; }
 .stepper .st-val.done { color: var(--green); }
 .stepper .st-tot { color: var(--txt-mut); }
 .stepper .st-rem { color: var(--amber); font-size: 11px; margin-left: 6px; }
-.li-track { margin-left: 6px; white-space: nowrap; }
 
 /* ---------- Kappa page ---------- */
 .kappa-progress { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; font-size: 13px; }

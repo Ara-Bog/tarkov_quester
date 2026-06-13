@@ -17,15 +17,26 @@ const out = {}; // slug(normalizedName) -> { svg, rotation, sx, sy, bounds, floo
 for (const group of maps) {
   for (const m of group.maps || []) {
     if (!m.svgPath || !m.transform || !m.bounds) continue;
-    const floors = [m.svgLayer, ...((m.layers || []).map((l) => l.svgLayer))].filter(Boolean);
     out[group.normalizedName] = {
       svg: m.svgPath,
       rotation: m.coordinateRotation || 0,
       sx: m.transform[0],
       sy: m.transform[2] * -1,
       bounds: m.bounds,
+      _layers: m.layers || [], // именованные этажи из maps.json (удаляется перед выводом)
     };
-    if (floors.length > 1) out[group.normalizedName].floors = floors;
+    // экстенты этажей: floor -> [[x1,z1,x2,z2,hmin,hmax], ...] (для привязки квест-маркеров к этажу)
+    const extents = {};
+    for (const l of m.layers || []) {
+      if (!l.svgLayer) continue;
+      const rects = [];
+      for (const e of l.extents || []) {
+        const h = e.height; if (!h) continue;
+        for (const b of e.bounds || []) { if (Array.isArray(b) && b[0] && b[1]) rects.push([b[0][0], b[0][1], b[1][0], b[1][1], h[0], h[1]]); }
+      }
+      if (rects.length) extents[l.svgLayer] = rects;
+    }
+    if (Object.keys(extents).length) out[group.normalizedName].extents = extents;
     break; // первый подходящий слой (Ground_Level)
   }
 }
@@ -71,6 +82,49 @@ for (const m of md) {
   g.bosses = (m.bosses || []).map((b) => ({ name: b.boss.name, chance: Math.round((b.spawnChance || 0) * 100) }))
     .filter((b, i, a) => a.findIndex((x) => x.name === b.name) === i)
     .sort((a, b) => b.chance - a.chance);
+}
+
+// --- этажи карты ---
+// Источники слоёв-этажей в SVG: атрибут data-layer (Таможня/Берег/Эпицентр) ИЛИ id группы
+// (Развязка использует <g id="First_Floor"> без data-layer). Выбираемые кнопки-этажи и их названия
+// берём из maps.json (m.layers: name + svgLayer). Слой, который есть в SVG, но не назван в maps.json
+// (напр. First_Floor на Таможне) — это «база» (показывается вместе с землёй, отдельной кнопки нет).
+const FLOOR_ORDER = ['Ground_Level', 'Ground_Floor', 'Underground_Level', 'Basement', 'Garage', 'Bunkers', 'Tunnels', 'First_Floor', 'Second_Floor', 'Third_Floor', 'Fourth_Floor', 'Fifth_Floor'];
+const NAME_RU = { Underground: 'Подвал', Garage: 'Подвал', Basement: 'Подвал', Bunkers: 'Бункеры', Tunnels: 'Тоннели', Ground: 'Земля', '1st Floor': '1 этаж', '2nd Floor': '2 этаж', '3rd Floor': '3 этаж', '4th Floor': '4 этаж', '5th Floor': '5 этаж' };
+const fOrder = (id) => { const i = FLOOR_ORDER.indexOf(id); return i < 0 ? 99 : i; };
+for (const [slug, g] of Object.entries(out)) {
+  try {
+    const svgText = await (await fetch(g.svg)).text();
+    const gids = new Set([...svgText.matchAll(/<g[^>]*\bid="([^"]+)"/g)].map((m) => m[1]));
+    const dlayers = new Set([...svgText.matchAll(/data-layer="([^"]+)"/g)].map((m) => m[1]));
+    // именованные этажи из maps.json, реально присутствующие в SVG (id группы или data-layer)
+    const named = [];
+    for (const l of g._layers || []) {
+      if (l.svgLayer && (gids.has(l.svgLayer) || dlayers.has(l.svgLayer))) named.push({ id: l.svgLayer, name: NAME_RU[l.name] || l.name });
+    }
+    // слои-этажи: только из data-layer (явная разметка) + именованные из maps.json + слой земли
+    const all = new Set([...dlayers, ...named.map((n) => n.id)]);
+    const groundId = ['Ground_Level', 'Ground_Floor'].find((id) => gids.has(id) || dlayers.has(id));
+    if (groundId) all.add(groundId);
+    const ordered = [...all].sort((a, b) => fOrder(a) - fOrder(b));
+    if (ordered.length > 1) {
+      g.floors = ordered;
+      // «База» (слой показывается вместе с землёй, без отдельной кнопки) выделяем только когда
+      // в maps.json есть именованные этажи — тогда лишний data-layer (напр. First_Floor на Таможне)
+      // это наземная постройка. Если имён нет (напр. Лаборатория) — все слои выбираемые.
+      const selectable = named.length
+        ? new Set([groundId || ordered[0], ...named.map((n) => n.id)])
+        : new Set(ordered);
+      const base = ordered.filter((id) => !selectable.has(id));
+      if (base.length) g.base = base;
+      const names = {};
+      for (const n of named) names[n.id] = n.name;
+      if (Object.keys(names).length) g.floorNames = names;
+    } else {
+      delete g.floors;
+    }
+  } catch { /* оставляем без этажей */ }
+  delete g._layers;
 }
 
 fs.mkdirSync(path.join(ROOT, 'data'), { recursive: true });
