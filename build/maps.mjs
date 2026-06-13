@@ -38,26 +38,36 @@ if (!out['the-lab']) {
   }
 }
 
-// --- выходы и спавны боссов из API ---
+// --- выходы (только PMC + общие, без чисто диких) и спавны боссов из API ---
+// Реальные зоны боссов: boss.spawnLocations[].spawnKey ТОЧНО совпадает со spawn.zoneName.
+// Берём центроид каждой боссовой зоны -> один маркер на зону с именем босса.
+// Где боссов нет (Map.bosses пуст, напр. Эпицентр) — маркеров не будет.
 const r1 = (n) => Math.round(n * 10) / 10;
 const gql = await fetch('https://api.tarkov.dev/graphql', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ query: `{ maps(lang: ru){ normalizedName extracts{ name faction position{x z} } spawns{ position{x z} categories } bosses{ boss{ name } spawnChance } } }` }),
+  body: JSON.stringify({ query: `{ maps(lang: ru){ normalizedName extracts{ name faction position{x z} } bosses{ boss{ name } spawnChance spawnLocations{ spawnKey } } spawns{ zoneName position{x z} } } }` }),
 });
 const md = (await gql.json()).data.maps;
 for (const m of md) {
   const g = out[m.normalizedName];
   if (!g) continue;
-  g.extracts = (m.extracts || []).filter((e) => e.position).map((e) => ({ name: e.name, faction: e.faction || 'shared', x: r1(e.position.x), z: r1(e.position.z) }));
-  // спавны боссов: точки с категорией "boss", дедуп по округлённой позиции
-  const seen = new Set(), bs = [];
-  for (const s of m.spawns || []) {
-    if (!s.position || !(s.categories || []).some((c) => /boss/i.test(c))) continue;
-    const k = Math.round(s.position.x / 6) + '|' + Math.round(s.position.z / 6);
-    if (seen.has(k)) continue; seen.add(k);
-    bs.push({ x: r1(s.position.x), z: r1(s.position.z) });
+  g.extracts = (m.extracts || [])
+    .filter((e) => e.position && /pmc|shared/i.test(e.faction || ''))
+    .map((e) => ({ name: e.name, faction: (e.faction || 'shared').toLowerCase(), x: r1(e.position.x), z: r1(e.position.z) }));
+
+  // zoneName -> set of boss names, что спавнятся в этой зоне
+  const zoneBosses = {};
+  for (const b of m.bosses || []) for (const sl of b.spawnLocations || []) { if (sl.spawnKey) (zoneBosses[sl.spawnKey] ||= new Set()).add(b.boss.name); }
+  // координаты спавнов в боссовых зонах
+  const zonePts = {};
+  for (const s of m.spawns || []) { if (s.position && zoneBosses[s.zoneName]) (zonePts[s.zoneName] ||= []).push(s.position); }
+  const bossSpawns = [];
+  for (const [zone, pts] of Object.entries(zonePts)) {
+    if (!pts.length) continue;
+    const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length, cz = pts.reduce((a, p) => a + p.z, 0) / pts.length;
+    bossSpawns.push({ x: r1(cx), z: r1(cz), bosses: [...zoneBosses[zone]] });
   }
-  g.bossSpawns = bs;
+  g.bossSpawns = bossSpawns;
   g.bosses = (m.bosses || []).map((b) => ({ name: b.boss.name, chance: Math.round((b.spawnChance || 0) * 100) }))
     .filter((b, i, a) => a.findIndex((x) => x.name === b.name) === i)
     .sort((a, b) => b.chance - a.chance);

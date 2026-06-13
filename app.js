@@ -794,7 +794,7 @@ function plannerLocationHtml(mapId) {
     questGroups.push(`<div class="qg"><div class="qt" style="color:${col}">${esc(t.name)}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.wiki)).join('')}</ul></div>`);
   }
   const exPins = geo ? (geo.extracts || []).map((e) => { const f = geoFrac(e.x, e.z, geo); return isFinite(f.left) ? `<div class="pin-ex" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${extractColor(e.faction)}" title="Выход (${factionRu(e.faction)}): ${esc(e.name)}"></div>` : ''; }).join('') : '';
-  const bossPins = geo ? (geo.bossSpawns || []).map((s) => { const f = geoFrac(s.x, s.z, geo); return isFinite(f.left) ? `<div class="pin-boss" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%" title="Зона спавна босса"></div>` : ''; }).join('') : '';
+  const bossPins = geo ? (geo.bossSpawns || []).map((s) => { const f = geoFrac(s.x, s.z, geo); return isFinite(f.left) ? `<div class="pin-boss" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%" title="Спавн босса: ${esc((s.bosses || []).join(', '))}"></div>` : ''; }).join('') : '';
   const bossLegend = geo && geo.bosses && geo.bosses.length ? `<div class="boss-legend">☠ Боссы: ${geo.bosses.map((x) => `${esc(x.name)} <span class="muted">${x.chance}%</span>`).join(' · ')}</div>` : '';
 
   const cornerPanel = `<div class="map-quests"><div class="mq-head">Текущие задачи</div>${questGroups.join('') || '<div class="empty-note">Нет активных задач на этой локации.</div>'}</div>`;
