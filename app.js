@@ -5,6 +5,11 @@
    State: IndexedDB (fallback localStorage / memory)
    ============================================================ */
 
+// Service worker — чтобы сайт обновлялся без Ctrl+Shift+R (см. sw.js).
+if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
+	navigator.serviceWorker.register("sw.js").catch(() => {});
+}
+
 // ---------- Storage: IndexedDB with localStorage / memory fallback ------
 // Versioning (see migrateData() below):
 //   DB_VERSION   — структурная версия IndexedDB (объектные хранилища). Бамп => onupgradeneeded.
