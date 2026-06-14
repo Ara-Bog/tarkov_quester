@@ -151,12 +151,59 @@ const taskById = new Map();
 const itemById = new Map();
 const itemByName = new Map(); // имя (lowercase) -> id, для разрешения именованных предметов сюжетки
 const mapById = new Map();
+const mapIdByName = new Map(); // имя локации -> id (для определения карты по описанию цели)
+// названия локаций в описаниях целей (капитализированные, разные падежи) -> каноническое имя.
+// Нужно, когда у findItem-цели нет maps в данных tarkov.dev, но локация указана в тексте.
+const MAP_NAME_RE = [
+	[/Таможн/, "Таможня"],
+	[/Лес[уае]|\bЛес\b/, "Лес"],
+	[/Берег/, "Берег"],
+	[/Маяк/, "Маяк"],
+	[/Развязк/, "Развязка"],
+	[/Резерв/, "Резерв"],
+	[/Завод/, "Завод"],
+	[/Лаборатор/, "Лаборатория"],
+	[/Улиц/, "Улицы Таркова"],
+	[/Эпицентр/, "Эпицентр"],
+	[/Лабиринт/, "Лабиринт"],
+	[/Ледокол/, "Ледокол"],
+	[/Терминал/, "Терминал"],
+];
+function mapsFromText(text) {
+	const s = String(text || "");
+	const ids = [];
+	for (const [re, name] of MAP_NAME_RE) {
+		if (re.test(s)) {
+			const id = mapIdByName.get(name);
+			if (id && !ids.includes(id)) ids.push(id);
+		}
+	}
+	return ids;
+}
+// эффективные локации цели: из данных, иначе вычисленные по описанию
+function effectiveMaps(o) {
+	if (o.maps && o.maps.length) return o.maps;
+	return mapsFromText(o.description);
+}
 const traderById = new Map();
 const unlocksMap = new Map(); // taskId -> [taskIds it unlocks] (требование status=complete)
 const failedUnlocksMap = new Map(); // taskId -> [taskIds, которые открываются, когда этот ПРОВАЛЕН]
 const failsOnComplete = new Map(); // taskId -> [taskIds that fail when this completes]
 let failedAll = new Set();
 let collectorTask = null; // квест "Коллекционер" (предметы для Каппы)
+// типы целей, выполняемые НЕПОСРЕДСТВЕННО в рейде — их показываем для безлокационных
+// квестов на любой карте. «Сдать» торговцу, навыки, сборка, репутация и т.п. — не рейдовые.
+const IN_RAID_TYPES = new Set([
+	"findItem",
+	"findQuestItem",
+	"plantItem",
+	"plantQuestItem",
+	"mark",
+	"shoot",
+	"extract",
+	"visit",
+	"useItem",
+]);
 
 // emoji-иконка для категории/именованного предмета по ключевым словам (различать по картинке, не по тексту)
 const CAT_EMOJI = [
@@ -210,6 +257,7 @@ const state = {
 	storyDone: new Set(), // id выполненных подзадач сюжетных квестов
 	storyBranch: {}, // questId -> выбранная ветка (концовка) сюжетного квеста
 	storyStarted: new Set(), // id начатых сюжетных квестов («Начать главу»)
+	found: {}, // ключ предмета в «Найти в рейде» -> сколько найдено (чек-лист рейда)
 };
 const ui = {
 	view: "mine",
@@ -234,7 +282,6 @@ const ui = {
 		kappa: false,
 		plan: false,
 		showdone: false,
-		showmine: false,
 	},
 };
 
@@ -245,6 +292,10 @@ const STATUS_RU = {
 	failed: "Провален",
 };
 const STATUS_RANK = { available: 0, locked: 1, completed: 2, failed: 3 };
+// упрощённый статус для отображения: без «Доступен»/«Заблокирован» — только выполнен/невыполнен/провален
+const dispStatus = (st) =>
+	st === "completed" || st === "failed" ? st : "todo";
+const DISP_RU = { completed: "Выполнен", failed: "Провален", todo: "Невыполнен" };
 const MAP_COLORS = {
 	Таможня: "#b8945f",
 	Завод: "#8a8f98",
@@ -274,6 +325,8 @@ const esc = (s) =>
 		/[&<>"]/g,
 		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
 	);
+// нормализация для поиска: нижний регистр + ё→е (чтобы е/ё считались одной буквой)
+const searchNorm = (s) => String(s).toLowerCase().replace(/ё/g, "е");
 const itemName = (id) => {
 	const i = itemById.get(id);
 	return i ? i.name : id;
@@ -406,7 +459,10 @@ function buildIndices() {
 		itemById.set(i.id, i);
 		if (i.name) itemByName.set(i.name.toLowerCase(), i.id);
 	});
-	data.maps.forEach((m) => mapById.set(m.id, m));
+	data.maps.forEach((m) => {
+		mapById.set(m.id, m);
+		mapIdByName.set(m.name, m.id);
+	});
 	data.traders.forEach((t) => traderById.set(t.id, t));
 	for (const t of data.tasks) {
 		for (const r of t.requires || []) {
@@ -436,7 +492,7 @@ function buildIndices() {
 			}
 		}
 		for (const mid of t.maps) parts.push(mapName(mid));
-		t._search = parts.join(" ").toLowerCase();
+		t._search = searchNorm(parts.join(" "));
 	}
 	collectorTask =
 		data.tasks.find((t) => t.normalizedName === "collector") ||
@@ -499,6 +555,10 @@ async function loadState() {
 	state.storyDone = new Set(await DB.get("storyDone", []));
 	state.storyBranch = (await DB.get("storyBranch", {})) || {};
 	state.storyStarted = new Set(await DB.get("storyStarted", []));
+	state.found = (await DB.get("found", {})) || {};
+}
+async function persistFound() {
+	await DB.set("found", state.found);
 }
 async function persistStory() {
 	await DB.set("storyDone", [...state.storyDone]);
@@ -613,6 +673,7 @@ function progressClick(e) {
 	const stb = e.target.closest(".st-btn");
 	if (!stb) return false;
 	const sp = stb.closest(".stepper");
+	if (!sp) return false; // не степпер цели (напр. чек-лист «нашёл в рейде»)
 	const id = sp.dataset.obj;
 	const total = +sp.dataset.total;
 	setProgress(
@@ -686,13 +747,11 @@ function baseTasks(scope) {
 }
 function filteredTasks(scope) {
 	const f = ui.filters,
-		q = f.search.trim().toLowerCase();
+		q = searchNorm(f.search.trim());
 	let list = baseTasks(scope).filter((t) => {
 		if (f.faction && t.faction !== f.faction) return false;
 		if (f.kappa && !t.kappa) return false;
 		if (f.plan && !state.plan.has(t.id)) return false;
-		if (scope === "all" && !f.showmine && state.active.has(t.id))
-			return false; // в "Все квесты" по умолчанию прячем уже взятые
 		if (f.trader && t.trader !== f.trader) return false;
 		if (f.map === "__none__") {
 			if (t.maps.length || t.objectives.some((o) => o.maps.length))
@@ -706,7 +765,7 @@ function filteredTasks(scope) {
 		if (f.action && !t.objectives.some((o) => o.action === f.action))
 			return false;
 		const st = statusOf(t);
-		if (f.status && st !== f.status) return false;
+		if (f.status && dispStatus(st) !== f.status) return false;
 		// По умолчанию выполненные скрыты; показываем только если включён фильтр или явно выбран статус "Выполненные".
 		if (!f.showdone && f.status !== "completed" && st === "completed")
 			return false;
@@ -876,7 +935,7 @@ function questRowHtml(t, scope) {
 			: `<button class="ico plan-add${inActive ? " on-active" : ""}" data-act="active" data-id="${t.id}" title="${inActive ? "Убрать из моих квестов" : "Добавить в мои квесты"}">${inActive ? "✓" : "+"}</button>`;
 	return `<div class="${cls}" data-id="${t.id}">
     ${firstCell}
-    <div><span class="badge b-${st}">${STATUS_RU[st]}</span></div>
+    <div><span class="badge b-${dispStatus(st)}">${DISP_RU[dispStatus(st)]}</span></div>
     <div class="qname">${esc(t.name)}${inActive ? ' <span class="mine-tag" title="В моих квестах">★</span>' : ""}<span class="sub">${sub.join(" · ")}</span></div>
     <div class="chips">${locChips}</div>
     <div class="bring-mini">${bringMini(t)}</div>
@@ -1032,10 +1091,10 @@ function questDetailHtml(t) {
 }
 
 function onbResultsHtml() {
-	const q = ui.onbQuery.trim().toLowerCase();
+	const q = searchNorm(ui.onbQuery.trim());
 	if (q.length < 2) return "";
 	const res = data.tasks
-		.filter((t) => t.name.toLowerCase().includes(q))
+		.filter((t) => searchNorm(t.name).includes(q))
 		.slice(0, 12);
 	if (!res.length)
 		return '<div class="onb-r empty-note">Ничего не найдено</div>';
@@ -1049,11 +1108,11 @@ function onbResultsHtml() {
 function onboardingHtml() {
 	return `<div class="onboarding">
     <div class="onb-row">
-      <div class="onb-text"><b>Быстрая настройка прогресса.</b> Найдите квест, который у вас сейчас активен и добавьте его. Все предыдущие по ветке отметятся «Выполнен» автоматически.</div>
+      <div class="onb-text"><b>Добавить квест.</b> Найдите квест и добавьте его в «Мои квесты». Все предыдущие по ветке отметятся «Выполнен» автоматически.</div>
       <button class="btn-ghost danger" id="reset-progress">Сбросить весь прогресс</button>
     </div>
     <div class="onb-search">
-      <input type="text" id="onb-input" placeholder="Найти текущий квест (напр. «Оружейник. Часть 6»)…" value="${esc(ui.onbQuery)}" autocomplete="off" />
+      <input type="text" id="onb-input" placeholder="Найти квест (напр. «Оружейник. Часть 6»)…" value="${esc(ui.onbQuery)}" autocomplete="off" />
       <div class="onb-results" id="onb-results">${onbResultsHtml()}</div>
     </div>
   </div>`;
@@ -1063,12 +1122,16 @@ function renderQuests(scope) {
 	const cont = document.getElementById(
 		scope === "mine" ? "view-mine" : "view-all",
 	);
-	let html = scope === "mine" ? onboardingHtml() : "";
-	html += `<div class="qtable">${headerHtml(list, scope)}`;
+	// поле «Добавить квест» — над фильтрами (отдельная секция, только на «Мои квесты»)
+	if (scope === "mine") {
+		const aq = document.getElementById("addquest");
+		if (aq) aq.innerHTML = onboardingHtml();
+	}
+	let html = `<div class="qtable">${headerHtml(list, scope)}`;
 	if (!list.length) {
 		html +=
 			scope === "mine"
-				? `<div class="loading">Список «Мои квесты» пуст.<br><br>Перейдите во вкладку <b>«Все квесты»</b> и добавьте нужные кнопкой <b>+</b>.<br>При выполнении квеста следующие по цепочке добавятся сюда автоматически.</div>`
+				? `<div class="loading">Список «Мои квесты» пуст.<br><br>Добавьте квест через поле <b>«Добавить квест»</b> сверху.<br>При выполнении квеста следующие по цепочке добавятся сюда автоматически.</div>`
 				: `<div class="loading">Ничего не найдено. Измените фильтры.</div>`;
 	} else {
 		for (const t of list) {
@@ -1109,14 +1172,16 @@ function aggregate(taskIds) {
 				rem = objRemaining(o);
 			const objDoneFully = trackable(o) && rem === 0; // полностью выполнена
 			const eff = (cnt) => (cnt === total ? rem : cnt); // уменьшаем только то, что масштабируется с прогрессом
-			const loc = (o.maps && o.maps[0]) || "none";
+			const em = effectiveMaps(o);
+			const loc = em[0] || "none";
 			const b = locOf(loc);
 			// выполненную цель ОСТАВЛЯЕМ в списке задач (зачёркнутой), но не берём/сдаём её
 			if (
 				o.bring.length ||
 				o.keys.length ||
 				loc !== "none" ||
-				o.handIn.length
+				o.handIn.length ||
+				IN_RAID_TYPES.has(o.type) // безлокационные рейдовые цели (убить/выйти и т.п.) без предметов
 			) {
 				if (!b.quests.has(tid)) b.quests.set(tid, []);
 				b.quests.get(tid).push(o);
@@ -1200,6 +1265,16 @@ function aggregate(taskIds) {
 		}
 	}
 	return { locs, handInItems, handInCats, handInChoices, builds };
+}
+// оставить в бакете только рейдовые цели (для слияния «без локации» в страницу локации)
+function inRaidBucket(b) {
+	if (!b) return null;
+	const quests = new Map();
+	for (const [tid, objs] of b.quests) {
+		const kept = objs.filter((o) => IN_RAID_TYPES.has(o.type));
+		if (kept.length) quests.set(tid, kept);
+	}
+	return { bring: b.bring, choices: b.choices, quests };
 }
 // объединить бакеты локаций (для показа квестов «без локации» на любой карте)
 function combineBuckets(...bs) {
@@ -1304,18 +1379,21 @@ function findInRaidRows(mapId) {
 					o.type === "giveItem";
 				if (!isFind) continue;
 			}
-			const anywhere = !o.maps || o.maps.length === 0;
-			if (!anywhere && !o.maps.includes(mapId)) continue; // на этой локации не добыть
+			const em = isStory ? o.maps || [] : effectiveMaps(o);
+			const anywhere = em.length === 0;
+			if (!anywhere && !em.includes(mapId)) continue; // на этой локации не добыть
 			for (const h of o.handIn || []) {
-				const fir = h.fir || h.kind === "find";
-				// обычные квесты — только FiR; сюжетные — всё, что нужно добыть/сдать
-				if (!isStory && !fir) continue;
+				const fir = !!(h.fir || h.kind === "find"); // FiR — обязательно найти в рейде
 				const cnt = h.count || 1;
 				// именованный предмет пробуем разрешить в реальный id (тогда будет настоящая иконка)
 				let iid = h.item;
 				if (!iid && h.name) iid = itemByName.get(h.name.toLowerCase());
 				if (iid) {
-					pqItem.set(iid, Math.max(pqItem.get(iid) || 0, cnt));
+					const cur = pqItem.get(iid);
+					pqItem.set(iid, {
+						count: Math.max(cur ? cur.count : 0, cnt),
+						fir: (cur ? cur.fir : false) || fir,
+					});
 				} else {
 					const txt = h.category || h.name;
 					if (!txt) continue;
@@ -1323,20 +1401,28 @@ function findInRaidRows(mapId) {
 					pqText.set(txt, {
 						count: Math.max(cur ? cur.count : 0, cnt),
 						cat: !!h.category,
+						fir: (cur ? cur.fir : false) || fir,
 					});
 				}
 			}
 		}
-		for (const [iid, c] of pqItem) {
-			const e = byItem.get(iid) || { count: 0, quests: new Set() };
-			e.count += c;
+		for (const [iid, v] of pqItem) {
+			const e = byItem.get(iid) || { count: 0, quests: new Set(), fir: false };
+			e.count += v.count;
 			e.quests.add(qname);
+			e.fir = e.fir || v.fir;
 			byItem.set(iid, e);
 		}
 		for (const [txt, v] of pqText) {
-			const e = byText.get(txt) || { count: 0, quests: new Set(), cat: v.cat };
+			const e = byText.get(txt) || {
+				count: 0,
+				quests: new Set(),
+				cat: v.cat,
+				fir: false,
+			};
 			e.count += v.count;
 			e.quests.add(qname);
+			e.fir = e.fir || v.fir;
 			byText.set(txt, e);
 		}
 	}
@@ -1354,19 +1440,31 @@ function findInRaidRows(mapId) {
 
 	const tagHtml = (qn) =>
 		`<span class="fg-tag quest" title="Для квеста: ${esc(qn.join(", "))}">${esc(qn.length === 1 ? qn[0] : qn.length + " квеста")}</span>`;
+	const firBadge = (fir) =>
+		fir
+			? ` <span class="firlbl" title="Только найдено в рейде">FiR</span>`
+			: "";
+	// чек-лист «нашёл в рейде»: +/− у предмета (state.found по ключу)
+	const lootStep = (key, need) => {
+		const f = Math.min(state.found[key] || 0, need);
+		return `<span class="loot-step" data-loot="${esc(key)}" data-need="${need}"><button class="st-btn" data-d="-1" title="убавить">−</button><b class="lv">${f}</b><span class="lt">/ ${need}</span><button class="st-btn" data-d="1" title="нашёл в рейде">+</button></span>`;
+	};
+	const lootDone = (key, need) => (state.found[key] || 0) >= need;
 	for (const [id, e] of byItem) {
 		const it = itemById.get(id) || {};
 		const ic = it.icon || it.img;
 		const img = ic
 			? `<img src="${ic}" data-item="${id}" data-itemimg="${it.img || it.icon || ""}" onerror="this.style.display='none'">`
 			: "";
+		const key = "i:" + id;
 		rows.push(
-			`<li>${img}<span class="nm">${esc(itemName(id))}</span><span class="cnt">×${e.count}</span>${tagHtml([...e.quests])}</li>`,
+			`<li class="${lootDone(key, e.count) ? "loot-found" : ""}">${img}<span class="nm">${esc(itemName(id))}</span>${firBadge(e.fir)}${lootStep(key, e.count)}${tagHtml([...e.quests])}</li>`,
 		);
 	}
 	for (const [txt, e] of byText) {
+		const key = "t:" + txt;
 		rows.push(
-			`<li class="cat-row"><span class="cat-ico" title="${e.cat ? "категория предметов" : "предмет"}">${catEmoji(txt, e.cat)}</span><span class="nm">${esc(txt)}</span><span class="cnt">×${e.count}</span>${tagHtml([...e.quests])}</li>`,
+			`<li class="cat-row ${lootDone(key, e.count) ? "loot-found" : ""}"><span class="cat-ico" title="${e.cat ? "категория предметов" : "предмет"}">${catEmoji(txt, e.cat)}</span><span class="nm">${esc(txt)}</span>${firBadge(e.fir)}${lootStep(key, e.count)}${tagHtml([...e.quests])}</li>`,
 		);
 	}
 	// предметы из вкладки «Список находок»
@@ -1466,6 +1564,7 @@ function addGeoOnlyMaps() {
 			m = { id, name };
 		data.maps.push(m);
 		mapById.set(id, m);
+		mapIdByName.set(name, id);
 		MAP_SLUG[name] = slug;
 	}
 }
@@ -1505,6 +1604,15 @@ function geoFrac(x, z, g) {
 		top: ((my - miny) / (maxy - miny)) * 100,
 	};
 }
+// маркер реально попадает на карту? отсекаем битые координаты вне поля
+// (напр. у Терминала спавны tarkov.dev не совпадают с bounds карты)
+const onMap = (f) =>
+	isFinite(f.left) &&
+	isFinite(f.top) &&
+	f.left >= -5 &&
+	f.left <= 105 &&
+	f.top >= -5 &&
+	f.top <= 105;
 // определить этаж (svgLayer) по координате цели; иначе земля
 function assignFloor(x, z, y, geo) {
 	if (!geo || !geo.floors) return null;
@@ -1749,8 +1857,12 @@ const FLOOR_RU = {
 // под-вкладка локации: карта (всегда, если есть гео) + квесты/выходы/боссы
 function plannerLocationHtml(mapId) {
 	const agg = aggregate(state.active);
-	// квесты этой локации + квесты без привязки к карте (их можно выполнить где угодно)
-	const b = combineBuckets(agg.locs.get(mapId), agg.locs.get("none"));
+	// квесты этой локации + рейдовые цели квестов без привязки к карте (их можно выполнить где угодно;
+	// «Сдать» торговцу и прочее не-рейдовое для безлокационных квестов не показываем)
+	const b = combineBuckets(
+		agg.locs.get(mapId),
+		inRaidBucket(agg.locs.get("none")),
+	);
 	const geo = geoFor(mapId);
 	const slug = mapSlug(mapId);
 	const mapLink = slug
@@ -1771,7 +1883,7 @@ function plannerLocationHtml(mapId) {
 				if (geo && cs.length) {
 					for (const c of cs) {
 						const f = geoFrac(c.x, c.z, geo);
-						if (isFinite(f.left) && isFinite(f.top)) {
+						if (onMap(f)) {
 							const fl = geo.floors
 								? assignFloor(c.x, c.z, c.y || 0, geo)
 								: "";
@@ -1794,7 +1906,7 @@ function plannerLocationHtml(mapId) {
 		? (geo.extracts || [])
 				.map((e) => {
 					const f = geoFrac(e.x, e.z, geo);
-					return isFinite(f.left)
+					return onMap(f)
 						? `<div class="mk mk-ex" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${extractColor(e.faction)}" title="Выход (${factionRu(e.faction)}): ${esc(e.name)}"><i class="mk-ico"></i><span class="mk-name">${esc(e.name)}</span></div>`
 						: "";
 				})
@@ -1804,7 +1916,7 @@ function plannerLocationHtml(mapId) {
 		? (geo.bossSpawns || [])
 				.map((s) => {
 					const f = geoFrac(s.x, s.z, geo);
-					return isFinite(f.left)
+					return onMap(f)
 						? `<div class="mk mk-boss" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%" title="Спавн босса: ${esc((s.bosses || []).join(", "))}"><i class="mk-ico"></i><span class="mk-name">${esc((s.bosses || []).join(", "))}</span></div>`
 						: "";
 				})
@@ -2443,19 +2555,19 @@ function shellHtml(av) {
 	return `
   <header class="topbar">
     <a class="brand" href="index.html" title="На главную"><h1>Квестовик</h1><span class="meta" id="meta"></span></a>
-    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("all", "Все квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}</nav>
+    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}</nav>
   </header>
   <main class="wrap">
+    <section class="addquest hidden" id="addquest"></section>
     <section class="filters" id="filters">
       <input type="text" id="f-search" placeholder="Поиск: квест, задача, предмет…" />
       <select id="f-map"><option value="">Все локации</option></select>
       <select id="f-trader"><option value="">Все торговцы</option></select>
       <select id="f-action"><option value="">Любое действие</option></select>
-      <select id="f-status"><option value="">Любой статус</option><option value="available">Доступные</option><option value="locked">Заблокированные</option><option value="completed">Выполненные</option><option value="failed">Проваленные</option></select>
+      <select id="f-status"><option value="">Любой статус</option><option value="todo">Невыполненные</option><option value="completed">Выполненные</option><option value="failed">Проваленные</option></select>
       <select id="f-faction"><option value="">Все фракции</option><option value="USEC">USEC</option><option value="BEAR">BEAR</option></select>
       <label class="chk"><input type="checkbox" id="f-kappa" /> Только Каппа</label>
       <label class="chk"><input type="checkbox" id="f-plan" /> Только в плане</label>
-      <label class="chk"><input type="checkbox" id="f-showmine" /> Показывать мои квесты</label>
       <label class="chk"><input type="checkbox" id="f-showdone" /> Показать выполненные</label>
       <button class="btn-ghost" id="f-reset">Сбросить</button>
     </section>
@@ -2465,8 +2577,7 @@ function shellHtml(av) {
       <p class="lead">Помогает собираться в рейд осмысленно: что взять с собой, что найти и сдать, какие квесты сейчас доступны и куда идти — всё в разрезе локаций.</p>
       <h3>Что внутри</h3>
       <ul>
-        <li><b>Мои квесты</b> — активные квесты. При выполнении следующие по цепочке добавляются автоматически. Сверху — быстрая настройка, если вы уже в середине игры.</li>
-        <li><b>Все квесты</b> — полный каталог с фильтрами и сортировкой. Видно, что квест требует, что открывает и какие квесты провалятся при его выполнении.</li>
+        <li><b>Мои квесты</b> — активные квесты. Сверху поле <b>«Добавить квест»</b>: найдите квест и добавьте его — все предыдущие по ветке отметятся выполненными. Дальше следующие квесты добавляются автоматически.</li>
         <li><b>Сюжетные</b> — главы историй: большие квесты, подзадачи которых открываются постепенно по стадиям, с выбором концовки у некоторых.</li>
         <li><b>План рейда</b> — отмеченные квесты, собранные по локациям: что <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>. Карты локаций с маркерами целей, выходами и спавнами боссов.</li>
         <li><b>Список находок</b> — личные списки предметов по группам с искомым количеством.</li>
@@ -2499,6 +2610,8 @@ function setView(v) {
 	);
 	const questView = v === "mine" || v === "all";
 	document.getElementById("filters").classList.toggle("hidden", !questView);
+	// поле «Добавить квест» — только на «Мои квесты»
+	document.getElementById("addquest").classList.toggle("hidden", v !== "mine");
 	document
 		.getElementById("stats")
 		.classList.toggle("hidden", !(questView || v === "planner"));
@@ -2599,7 +2712,6 @@ function wireEvents() {
 		"f-faction:faction",
 		"f-kappa:kappa",
 		"f-plan:plan",
-		"f-showmine:showmine",
 		"f-showdone:showdone",
 	].forEach((s) => {
 		const [i, k] = s.split(":");
@@ -2615,14 +2727,13 @@ function wireEvents() {
 			faction: "",
 			kappa: false,
 			plan: false,
-			showmine: false,
 			showdone: false,
 		});
 		document.getElementById("f-search").value = "";
 		["f-map", "f-trader", "f-action", "f-status", "f-faction"].forEach(
 			(i) => (document.getElementById(i).value = ""),
 		);
-		["f-kappa", "f-plan", "f-showmine", "f-showdone"].forEach(
+		["f-kappa", "f-plan", "f-showdone"].forEach(
 			(i) => (document.getElementById(i).checked = false),
 		);
 		renderStats();
@@ -2643,12 +2754,22 @@ function wireEvents() {
 	document.getElementById("view-all").addEventListener("change", (e) => {
 		progressChange(e);
 	});
-	document.getElementById("view-mine").addEventListener("input", (e) => {
+	// поле «Добавить квест» (над фильтрами) — поиск и добавление квеста
+	const addq = document.getElementById("addquest");
+	addq.addEventListener("input", (e) => {
 		if (e.target.id === "onb-input") {
 			ui.onbQuery = e.target.value;
 			const box = document.getElementById("onb-results");
 			if (box) box.innerHTML = onbResultsHtml();
 		}
+	});
+	addq.addEventListener("click", (e) => {
+		const cur = e.target.closest("[data-current]");
+		if (cur) {
+			markAsCurrent(cur.dataset.current);
+			return;
+		}
+		if (e.target.id === "reset-progress") resetProgress();
 	});
 
 	// planner
@@ -2664,14 +2785,43 @@ function wireEvents() {
 		}
 		const pin = e.target.closest("[data-pinobj]");
 		if (pin) {
-			const li = document.querySelector(
-				`#view-planner [data-li-obj="${pin.dataset.pinobj}"]`,
-			);
-			if (li) {
-				li.scrollIntoView({ behavior: "smooth", block: "center" });
-				li.classList.add("li-flash");
-				setTimeout(() => li.classList.remove("li-flash"), 1200);
+			// клик по маркеру отмечает соответствующую подзадачу справа (+1 к прогрессу;
+			// для чекбокса — сразу выполнено). Так понятно, какую именно цель закрыл.
+			const objId = pin.dataset.pinobj;
+			const t = taskById.get(pin.dataset.quest);
+			const o = t && t.objectives.find((x) => x.id === objId);
+			if (o && trackable(o)) {
+				setProgress(
+					objId,
+					Math.min(objTotal(o), objDone(objId) + 1),
+				);
+			} else {
+				// не трекается — просто подсветим строку задачи
+				const li = document.querySelector(
+					`#view-planner [data-li-obj="${objId}"]`,
+				);
+				if (li) {
+					li.scrollIntoView({ behavior: "smooth", block: "center" });
+					li.classList.add("li-flash");
+					setTimeout(() => li.classList.remove("li-flash"), 1200);
+				}
 			}
+			return;
+		}
+		// чек-лист «нашёл в рейде»: +/− у предмета в «Найти в рейде»
+		const ls = e.target.closest(".loot-step .st-btn");
+		if (ls) {
+			const wrap = ls.closest(".loot-step");
+			const key = wrap.dataset.loot,
+				need = +wrap.dataset.need;
+			const next = Math.max(
+				0,
+				Math.min(need, (state.found[key] || 0) + +ls.dataset.d),
+			);
+			if (next <= 0) delete state.found[key];
+			else state.found[key] = next;
+			persistFound();
+			renderPlanner();
 			return;
 		}
 		if (progressClick(e)) return;

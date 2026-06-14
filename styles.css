@@ -73,6 +73,12 @@ button { font-family: inherit; cursor: pointer; }
   background: var(--bg); color: var(--txt); border: 1px solid var(--line-2);
   border-radius: 6px; padding: 8px 10px; font-size: 13px; outline: none;
 }
+.filters select {
+  appearance: none; -webkit-appearance: none; -moz-appearance: none;
+  padding-right: 30px;
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6' viewBox='0 0 10 6'%3E%3Cpath d='M1 1l4 4 4-4' fill='none' stroke='%238e9197' stroke-width='1.5' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E");
+  background-repeat: no-repeat; background-position: right 11px center;
+}
 .filters input[type=text]:focus, .filters select:focus { border-color: var(--gold-dim); }
 .filters input[type=text] { min-width: 240px; flex: 1 1 240px; }
 .chk { display: inline-flex; align-items: center; gap: 6px; color: var(--txt-dim); font-size: 12.5px; user-select: none; cursor: pointer; }
@@ -118,6 +124,7 @@ button { font-family: inherit; cursor: pointer; }
 }
 .b-available { background: rgba(91,143,201,.16); color: var(--blue); border: 1px solid rgba(91,143,201,.4); }
 .b-locked    { background: rgba(120,120,120,.12); color: var(--txt-mut); border: 1px solid var(--line-2); }
+.b-todo      { background: rgba(91,143,201,.16); color: var(--blue); border: 1px solid rgba(91,143,201,.4); }
 .b-completed { background: rgba(111,174,84,.16); color: var(--green); border: 1px solid rgba(111,174,84,.4); }
 .b-failed    { background: rgba(204,91,70,.16); color: var(--red); border: 1px solid rgba(204,91,70,.4); }
 
@@ -586,3 +593,19 @@ details.ss.done[open] > summary.ss-head::before { content: "▾"; }
 
 /* пометка квеста без привязки к локации (показывается на любой карте) */
 .qg .anyloc-tag { font-size: 10px; font-weight: 700; color: #1a1407; background: var(--gold-dim); padding: 1px 7px; border-radius: 9px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
+
+/* секция «Добавить квест» — над фильтрами на «Мои квесты» */
+.addquest { margin-bottom: 14px; }
+.addquest:empty { display: none; }
+.addquest.hidden { display: none; }
+
+/* чек-лист «нашёл в рейде»: +/− у предметов в карточке «Найти в рейде» */
+.findings-loc-card .fg-items li .fg-tag, .map-quests .fg-items li .fg-tag { margin-left: 0; }
+.fg-items li .loot-step { display: inline-flex; align-items: center; gap: 5px; flex: 0 0 auto; }
+.fg-items li .loot-step .st-btn { width: 22px; height: 22px; border: 1px solid var(--line-2); background: var(--bg-3); color: var(--txt-dim); border-radius: 5px; font-size: 15px; line-height: 1; display: inline-flex; align-items: center; justify-content: center; padding: 0; cursor: pointer; }
+.fg-items li .loot-step .st-btn:hover { color: var(--txt); border-color: var(--gold-dim); }
+.fg-items li .loot-step .lv { color: var(--gold); font-weight: 700; min-width: 10px; text-align: right; }
+.fg-items li .loot-step .lt { color: var(--txt-mut); font-size: 11px; margin-right: 2px; }
+.fg-items li.loot-found { opacity: .55; }
+.fg-items li.loot-found .nm { text-decoration: line-through; }
+.fg-items li.loot-found .loot-step .lv { color: var(--green); }
