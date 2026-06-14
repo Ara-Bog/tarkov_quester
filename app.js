@@ -245,6 +245,31 @@ const NON_TRACKABLE = new Set([
 const trackable = (o) => !NON_TRACKABLE.has(o.type);
 const objTotal = (o) => o.count || 1;
 const objRemaining = (o) => Math.max(0, objTotal(o) - objDone(o.id));
+// «Сдать»/«Передать» торговцу — условно необязательные цели: они не должны мешать завершить квест
+// из рейда (предмет уже добыт), поэтому в прогресс/завершение не входят. Без видимой пометки.
+const HANDIN_TYPES = new Set(["giveItem", "giveQuestItem"]);
+// цель учитывается в прогрессе и в условии завершения, если она отслеживаемая, не помечена optional
+// и не является сдачей торговцу
+const countsForCompletion = (o) =>
+	trackable(o) && !o.optional && !HANDIN_TYPES.has(o.type);
+// прогресс квеста по учитываемым целям: сделано/всего и % (allDone — все такие цели закрыты)
+function questProgress(t) {
+	let done = 0,
+		total = 0,
+		n = 0;
+	for (const o of t.objectives) {
+		if (!countsForCompletion(o)) continue;
+		n++;
+		total += objTotal(o);
+		done += Math.min(objTotal(o), objDone(o.id));
+	}
+	return {
+		done,
+		total,
+		pct: total ? Math.round((done / total) * 100) : 0,
+		allDone: n > 0 && done >= total,
+	};
+}
 
 const state = {
 	completed: new Set(),
@@ -353,10 +378,15 @@ const traderName = (id) => {
 };
 const shorten = (s, n = 60) =>
 	s && s.length > n ? s.slice(0, n - 1) + "…" : s;
-// ссылка на русскую вики EFT по названию квеста
+// ссылка на русскую вики EFT по названию квеста.
+// В tarkov.dev многосерийные квесты называются «X. Часть N», а на вики — «X - Часть N».
 const ruWiki = (name) =>
 	"https://escapefromtarkov.fandom.com/ru/wiki/" +
-	encodeURIComponent(String(name).replace(/ /g, "_"));
+	encodeURIComponent(
+		String(name)
+			.replace(/\s*\.\s*Часть/gi, " - Часть")
+			.replace(/ /g, "_"),
+	);
 const wikiLink = (name, cls = "obj-guide") =>
 	name
 		? `<a class="${cls}" href="${ruWiki(name)}" target="_blank" rel="noopener" title="Открыть квест на вики">wiki ↗</a>`
@@ -434,6 +464,8 @@ function statusOf(t) {
 // одноимённые квесты (напр. «Новое начало» ×4 — престиж 0/1/2/3, «Обновка» — BEAR/USEC)
 // делаем различимыми: дописываем к названию престиж / фракцию / номер
 function disambiguateNames() {
+	// исходное имя без суффиксов «(Престиж N)» и т.п. — для ссылки на вики
+	for (const t of data.tasks) t.baseName = t.name;
 	const byName = new Map();
 	for (const t of data.tasks)
 		(byName.get(t.name) || byName.set(t.name, []).get(t.name)).push(t);
@@ -970,7 +1002,12 @@ function questRowHtml(t, scope) {
 			: `<button class="ico plan-add${inActive ? " on-active" : ""}" data-act="active" data-id="${t.id}" title="${inActive ? "Убрать из моих квестов" : "Добавить в мои квесты"}">${inActive ? "✓" : "+"}</button>`;
 	return `<div class="${cls}" data-id="${t.id}">
     ${firstCell}
-    <div><span class="badge b-${dispStatus(st)}">${DISP_RU[dispStatus(st)]}</span></div>
+    <div class="qstatus"><span class="badge b-${dispStatus(st)}">${DISP_RU[dispStatus(st)]}</span>${(() => {
+			const p = questProgress(t);
+			return p.total && dispStatus(st) === "todo"
+				? `<span class="qpct" title="Выполнено ${p.done} из ${p.total}"><span class="qpct-bar"><i style="width:${p.pct}%"></i></span><b>${p.pct}%</b></span>`
+				: "";
+		})()}</div>
     <div class="qname">${esc(t.name)}${inActive ? ' <span class="mine-tag" title="В моих квестах">★</span>' : ""}<span class="sub">${sub.join(" · ")}</span></div>
     <div class="chips">${locChips}</div>
     <div class="bring-mini">${bringMini(t)}</div>
@@ -1122,7 +1159,7 @@ function depsHtml(t) {
 	return `<div class="deps">${lines.join("")}</div>`;
 }
 function questDetailHtml(t) {
-	return `<div class="qdetail" data-detail="${t.id}">${t.objectives.map((o) => objHtml(o, t.name)).join("")}${depsHtml(t)}</div>`;
+	return `<div class="qdetail" data-detail="${t.id}">${t.objectives.map((o) => objHtml(o, t.baseName)).join("")}${depsHtml(t)}</div>`;
 }
 
 function onbResultsHtml() {
@@ -1793,8 +1830,11 @@ function renderPlanner() {
 		const groups = [...b.quests.entries()]
 			.map(([tid, objs]) => {
 				const t = taskById.get(tid);
-				const lis = objs.map((o) => objLiHtml(o, t.name)).join("");
-				return `<div class="qg"><div class="qt">${esc(t.name)}</div><ul class="ol">${lis}</ul></div>`;
+				const lis = objs.map((o) => objLiHtml(o, t.baseName)).join("");
+				const finBtn = questProgress(t).allDone
+					? `<button class="btn-finish" data-finish="${tid}" title="Все обязательные цели закрыты — отметить квест выполненным">Завершить ✓</button>`
+					: "";
+				return `<div class="qg"><div class="qt">${esc(t.name)}${finBtn}</div><ul class="ol">${lis}</ul></div>`;
 			})
 			.join("");
 		cards += `<div class="loc-card">
@@ -1933,8 +1973,11 @@ function plannerLocationHtml(mapId) {
 					);
 			}
 			const anyLoc = t.maps.length === 0;
+			const finBtn = questProgress(t).allDone
+				? `<button class="btn-finish" data-finish="${tid}" title="Все обязательные цели закрыты — отметить квест выполненным">Завершить ✓</button>`
+				: "";
 			questGroups.push(
-				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}${anyLoc ? ' <span class="anyloc-tag" title="Без привязки к локации — можно выполнить на любой карте">любая локация</span>' : ""}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.name)).join("")}</ul></div>`,
+				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}${anyLoc ? ' <span class="anyloc-tag" title="Без привязки к локации — можно выполнить на любой карте">любая локация</span>' : ""}${finBtn}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.baseName)).join("")}</ul></div>`,
 			);
 		}
 	const exPins = geo
@@ -2869,6 +2912,12 @@ function wireEvents() {
 				img.dataset.itemimg || itemImg(img.dataset.item),
 				itemName(img.dataset.item),
 			);
+			return;
+		}
+		const fin = e.target.closest("[data-finish]");
+		if (fin) {
+			setStatus(fin.dataset.finish, "completed");
+			renderPlanner();
 			return;
 		}
 		const rm = e.target.closest("[data-rm]");

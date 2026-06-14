@@ -127,6 +127,12 @@ button { font-family: inherit; cursor: pointer; }
 .b-todo      { background: rgba(91,143,201,.16); color: var(--blue); border: 1px solid rgba(91,143,201,.4); }
 .b-completed { background: rgba(111,174,84,.16); color: var(--green); border: 1px solid rgba(111,174,84,.4); }
 .b-failed    { background: rgba(204,91,70,.16); color: var(--red); border: 1px solid rgba(204,91,70,.4); }
+/* статус-ячейка с бейджем и % выполнения */
+.qstatus { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; }
+.qpct { display: flex; align-items: center; gap: 6px; font-size: 11px; }
+.qpct .qpct-bar { width: 56px; height: 5px; border-radius: 3px; background: var(--bg-3); border: 1px solid var(--line-2); overflow: hidden; }
+.qpct .qpct-bar i { display: block; height: 100%; background: var(--gold); }
+.qpct b { color: var(--txt-dim); font-weight: 700; min-width: 30px; }
 
 .chips { display: flex; flex-wrap: wrap; gap: 4px; }
 .chip {
@@ -316,7 +322,9 @@ button { font-family: inherit; cursor: pointer; }
 
 .obj-by-quest { border-top: 1px dashed var(--line); padding-top: 10px; }
 .obj-by-quest .qg { margin-bottom: 8px; }
-.obj-by-quest .qg > .qt { font-weight: 700; font-size: 12.5px; color: var(--gold); margin-bottom: 3px; }
+.obj-by-quest .qg > .qt { font-weight: 700; font-size: 12.5px; color: var(--gold); margin-bottom: 3px; display: flex; align-items: center; gap: 8px; }
+.btn-finish { margin-left: auto; flex-shrink: 0; background: rgba(111,174,84,.16); color: var(--green); border: 1px solid rgba(111,174,84,.5); border-radius: 6px; padding: 3px 10px; font-size: 11px; font-weight: 700; white-space: nowrap; cursor: pointer; }
+.btn-finish:hover { background: rgba(111,174,84,.28); }
 
 /* доп-блоки под задачами локации: «Найти для квестов» / «Список находок» (свёртываются свитчем) */
 .loc-extra { border-top: 1px dashed var(--line); padding-top: 8px; margin-top: 10px; }
