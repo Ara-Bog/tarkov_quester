@@ -1076,6 +1076,7 @@ function aggregate(taskIds) {
 	for (const tid of taskIds) {
 		const t = taskById.get(tid);
 		if (!t) continue;
+		if (state.completed.has(tid) || failedAll.has(tid)) continue; // выполненные/проваленные не планируем
 		const qHand = new Map(); // per-quest dedupe of handIn items (merge find+give -> max)
 		for (const o of t.objectives) {
 			const total = objTotal(o),
@@ -1295,6 +1296,7 @@ function findInRaidRows(mapId) {
 	}
 
 	for (const id of state.active) {
+		if (state.completed.has(id) || failedAll.has(id)) continue; // выполненные/проваленные не показываем
 		const t = taskById.get(id);
 		if (t) consume(t.name, t.objectives, false);
 	}
@@ -1493,6 +1495,7 @@ function objLiHtml(o, qname) {
 function activeLocations() {
 	const s = new Set();
 	for (const tid of state.active) {
+		if (state.completed.has(tid) || failedAll.has(tid)) continue;
 		const t = taskById.get(tid);
 		if (!t) continue;
 		for (const o of t.objectives) for (const m of o.maps) s.add(m);
