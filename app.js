@@ -609,6 +609,26 @@ function toggleActive(id) {
 	renderStats();
 	renderActiveViews();
 }
+// Убрать квест из «Мои квесты»: чистим статус, прогресс целей и план (без «осиротевших» записей)
+function removeFromMine(id) {
+	const t = taskById.get(id);
+	state.active.delete(id);
+	state.completed.delete(id);
+	state.failed.delete(id);
+	state.plan.delete(id);
+	if (t)
+		for (const o of t.objectives) {
+			delete state.progress[o.id];
+			for (const k of Object.keys(state.planChoices))
+				if (k.startsWith(o.id + "|")) delete state.planChoices[k];
+		}
+	recomputeFailed();
+	persistProgress();
+	persistObjProgress();
+	persistPlan();
+	renderStats();
+	renderActiveViews();
+}
 // "У меня сейчас этот квест": все предыдущие по ветке -> Выполнен, сам квест -> активен.
 function markAsCurrent(id) {
 	const toComplete = new Set();
@@ -644,7 +664,7 @@ function markAsCurrent(id) {
 function resetProgress() {
 	if (
 		!confirm(
-			"Сбросить весь прогресс по квестам (выполненные, проваленные, мои квесты, прогресс целей)?\n\nПлан рейда и список находок останутся.",
+			"Сбросить весь прогресс по квестам (выполненные, проваленные, мои квесты, прогресс целей, план рейда)?\n\nСписок находок останется.",
 		)
 	)
 		return;
@@ -652,12 +672,30 @@ function resetProgress() {
 	state.failed.clear();
 	state.active.clear();
 	state.progress = {};
+	state.plan.clear();
+	state.planChoices = {};
 	recomputeFailed();
 	persistProgress();
 	persistObjProgress();
+	persistPlan();
 	renderStats();
 	renderActiveViews();
 	toast("Прогресс по квестам сброшен.");
+}
+function resetStory() {
+	if (
+		!confirm(
+			"Сбросить прогресс по сюжетным квестам (начатые главы, выполненные подзадачи, выбранные концовки)?",
+		)
+	)
+		return;
+	state.storyDone.clear();
+	state.storyStarted.clear();
+	state.storyBranch = {};
+	persistStory();
+	renderStory();
+	if (ui.view === "planner") renderPlanner();
+	toast("Прогресс по сюжетным квестам сброшен.");
 }
 function setProgress(objId, val) {
 	val = Math.max(0, val || 0);
@@ -828,17 +866,14 @@ function fillFilterOptions() {
 // ---------- Stats -------------------------------------------------------
 function renderStats() {
 	let done = 0,
-		avail = 0,
 		fail = 0;
 	for (const t of data.tasks) {
 		const s = statusOf(t);
 		if (s === "completed") done++;
-		else if (s === "available") avail++;
 		else if (s === "failed") fail++;
 	}
 	document.getElementById("stats").innerHTML =
 		`<span>Мои квесты: <b>${state.active.size}</b></span>` +
-		`<span class="dot">•</span><span>Доступно: <b>${avail}</b></span>` +
 		`<span class="dot">•</span><span>Выполнено: <b>${done}</b> / ${data.tasks.length}</span>` +
 		`<span class="dot">•</span><span>Провалено: <b>${fail}</b></span>` +
 		`<span class="dot">•</span><span>В плане рейда: <b>${state.plan.size}</b></span>`;
@@ -943,7 +978,7 @@ function questRowHtml(t, scope) {
     <div class="qctrl">
       <button class="ico done ${st === "completed" ? "on-done" : ""}" data-act="done" data-id="${t.id}" title="Выполнен">✓</button>
       <button class="ico fail ${st === "failed" ? "on-fail" : ""}" data-act="fail" data-id="${t.id}" title="Провален">✗</button>
-      <button class="ico reset" data-act="reset" data-id="${t.id}" title="Сбросить статус">↺</button>
+      <button class="ico reset" data-act="remove" data-id="${t.id}" title="Убрать из моих квестов">✕</button>
     </div>
   </div>`;
 }
@@ -1099,10 +1134,10 @@ function onbResultsHtml() {
 	if (!res.length)
 		return '<div class="onb-r empty-note">Ничего не найдено</div>';
 	return res
-		.map(
-			(t) =>
-				`<div class="onb-r"><div><b>${esc(t.name)}</b> <span class="muted">${esc(traderName(t.trader))}${t.minLevel ? " · ур. " + t.minLevel : ""}</span></div><button class="btn-ghost" data-current="${t.id}">Добавить →</button></div>`,
-		)
+		.map((t) => {
+			const inMine = state.active.has(t.id);
+			return `<div class="onb-r${inMine ? " added" : ""}"${inMine ? "" : ` data-current="${t.id}"`}><div><b>${esc(t.name)}</b> <span class="muted">${esc(traderName(t.trader))}${t.minLevel ? " · ур. " + t.minLevel : ""}</span></div><span class="onb-hint">${inMine ? "✓ в моих" : "Добавить →"}</span></div>`;
+		})
 		.join("");
 }
 function onboardingHtml() {
@@ -1906,9 +1941,9 @@ function plannerLocationHtml(mapId) {
 		? (geo.extracts || [])
 				.map((e) => {
 					const f = geoFrac(e.x, e.z, geo);
-					return onMap(f)
-						? `<div class="mk mk-ex" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${extractColor(e.faction)}" title="Выход (${factionRu(e.faction)}): ${esc(e.name)}"><i class="mk-ico"></i><span class="mk-name">${esc(e.name)}</span></div>`
-						: "";
+					if (!onMap(f)) return "";
+					const fl = geo.floors ? assignFloor(e.x, e.z, e.y || 0, geo) : "";
+					return `<div class="mk mk-ex" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${extractColor(e.faction)}"${fl ? ` data-floor="${fl}"` : ""} title="Выход (${factionRu(e.faction)}): ${esc(e.name)}"><i class="mk-ico"></i><span class="mk-name">${esc(e.name)}</span></div>`;
 				})
 				.join("")
 		: "";
@@ -1916,9 +1951,9 @@ function plannerLocationHtml(mapId) {
 		? (geo.bossSpawns || [])
 				.map((s) => {
 					const f = geoFrac(s.x, s.z, geo);
-					return onMap(f)
-						? `<div class="mk mk-boss" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%" title="Спавн босса: ${esc((s.bosses || []).join(", "))}"><i class="mk-ico"></i><span class="mk-name">${esc((s.bosses || []).join(", "))}</span></div>`
-						: "";
+					if (!onMap(f)) return "";
+					const fl = geo.floors ? assignFloor(s.x, s.z, s.y || 0, geo) : "";
+					return `<div class="mk mk-boss" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%"${fl ? ` data-floor="${fl}"` : ""} title="Спавн босса: ${esc((s.bosses || []).join(", "))}"><i class="mk-ico"></i><span class="mk-name">${esc((s.bosses || []).join(", "))}</span></div>`;
 				})
 				.join("")
 		: "";
@@ -1929,7 +1964,7 @@ function plannerLocationHtml(mapId) {
 
 	const cornerPanel = `<div class="map-quests"><div class="mq-head">Текущие задачи</div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}${storyLocBlock(mapId)}${findingsCornerBlock(mapId)}</div>`;
 	const lyr = (k, label) =>
-		`<label><input type="checkbox" data-layer="${k}" ${ui.mapLayers[k] ? "checked" : ""}> ${label}</label>`;
+		`<label data-hllayer="${k}"><input type="checkbox" data-layer="${k}" ${ui.mapLayers[k] ? "checked" : ""}> ${label}</label>`;
 	const mapPanel = geo
 		? `<div class="map-view ${ui.mapFullscreen ? "fs" : ""}">
       <div class="map-zoom">
@@ -2046,12 +2081,14 @@ function initMap() {
 			g.style.display = "";
 			g.style.opacity = String(op);
 		}
-		// квест-маркеры: яркие на своём этаже (и базовые — на земле), иначе затемнены
-		inner.querySelectorAll(".pin-dot[data-floor]").forEach((p) => {
-			const pf = p.dataset.floor;
-			p.style.opacity =
-				pf === sel || (onGround && isBase(pf)) ? "1" : "0.22";
-		});
+		// квест-маркеры и метки выходов/боссов: яркие на своём этаже (и базовые — на земле), иначе затемнены
+		inner
+			.querySelectorAll(".pin-dot[data-floor], .mk[data-floor]")
+			.forEach((p) => {
+				const pf = p.dataset.floor;
+				p.style.opacity =
+					pf === sel || (onGround && isBase(pf)) ? "1" : "0.22";
+			});
 	};
 	const ready = () => {
 		const svg = holder.querySelector("svg");
@@ -2320,7 +2357,7 @@ function renderStory() {
 	}
 	const ordered = [...qs].sort((a, b) => (a.order || 99) - (b.order || 99));
 	root.innerHTML = `
-		<div class="page-head"><h2>Сюжетные квесты</h2><span class="ph-sub">${ordered.length} глав · подзадачи открываются по мере прохождения</span></div>
+		<div class="page-head"><h2>Сюжетные квесты</h2><span class="ph-sub">${ordered.length} глав · подзадачи открываются по мере прохождения</span><div class="ph-actions"><button class="btn-ghost danger" id="reset-story">Сбросить сюжетные квесты</button></div></div>
 		<div class="story-list">${ordered.map(storyQuestHtml).join("")}</div>`;
 }
 // объективы ТЕКУЩЕЙ активной стадии сюжетного квеста (общей или внутри выбранной ветки)
@@ -2676,6 +2713,7 @@ function questTableClick(e, scope) {
 		else if (btn.dataset.act === "fail")
 			setStatus(id, state.failed.has(id) ? null : "failed");
 		else if (btn.dataset.act === "active") toggleActive(id);
+		else if (btn.dataset.act === "remove") removeFromMine(id);
 		else setStatus(id, null);
 		return;
 	}
@@ -2892,12 +2930,36 @@ function wireEvents() {
 				.querySelectorAll(`.pin-dot[data-quest="${tid}"]`)
 				.forEach((p) => p.classList.add("pin-hl"));
 	};
+	// подсветка меток выходов/боссов при наведении на «Выходы»/«Боссы» в левой менюшке слоёв
+	const LAYER_MK = { extracts: ".mk-ex", bosses: ".mk-boss" };
+	let hlLayer = null;
+	const setHlLayer = (k) => {
+		if (hlLayer === k) return;
+		hlLayer = k;
+		planView
+			.querySelectorAll(".mk.mk-hl")
+			.forEach((p) => p.classList.remove("mk-hl"));
+		if (k && LAYER_MK[k])
+			planView
+				.querySelectorAll(LAYER_MK[k])
+				.forEach((p) => p.classList.add("mk-hl"));
+	};
 	planView.addEventListener("mouseover", (e) => {
+		const ly = e.target.closest(".map-layers [data-hllayer]");
+		if (ly) {
+			setHlLayer(ly.dataset.hllayer);
+			return;
+		}
 		const qg = e.target.closest("[data-quest]");
 		if (qg && !qg.classList.contains("pin-dot"))
 			setHlQuest(qg.dataset.quest);
 	});
 	planView.addEventListener("mouseout", (e) => {
+		const ly = e.target.closest(".map-layers [data-hllayer]");
+		if (ly && !ly.contains(e.relatedTarget)) {
+			setHlLayer(null);
+			return;
+		}
 		const qg = e.target.closest("[data-quest]");
 		if (
 			qg &&
@@ -3053,6 +3115,10 @@ function wireEvents() {
 		renderStory();
 	});
 	story.addEventListener("click", (e) => {
+		if (e.target.id === "reset-story") {
+			resetStory();
+			return;
+		}
 		// «Начать главу»
 		const start = e.target.closest("[data-start]");
 		if (start) {

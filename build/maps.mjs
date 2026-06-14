@@ -56,7 +56,7 @@ if (!out['the-lab']) {
 const r1 = (n) => Math.round(n * 10) / 10;
 const gql = await fetch('https://api.tarkov.dev/graphql', {
   method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ query: `{ maps(lang: ru){ normalizedName extracts{ name faction position{x z} } bosses{ boss{ name } spawnChance spawnLocations{ spawnKey } } spawns{ zoneName position{x z} } } }` }),
+  body: JSON.stringify({ query: `{ maps(lang: ru){ normalizedName extracts{ name faction position{x y z} } bosses{ boss{ name } spawnChance spawnLocations{ spawnKey } } spawns{ zoneName position{x y z} } } }` }),
 });
 const md = (await gql.json()).data.maps;
 for (const m of md) {
@@ -64,7 +64,7 @@ for (const m of md) {
   if (!g) continue;
   g.extracts = (m.extracts || [])
     .filter((e) => e.position && /pmc|shared/i.test(e.faction || ''))
-    .map((e) => ({ name: e.name, faction: (e.faction || 'shared').toLowerCase(), x: r1(e.position.x), z: r1(e.position.z) }));
+    .map((e) => ({ name: e.name, faction: (e.faction || 'shared').toLowerCase(), x: r1(e.position.x), z: r1(e.position.z), y: r1(e.position.y) }));
 
   // zoneName -> set of boss names, что спавнятся в этой зоне
   const zoneBosses = {};
@@ -75,8 +75,8 @@ for (const m of md) {
   const bossSpawns = [];
   for (const [zone, pts] of Object.entries(zonePts)) {
     if (!pts.length) continue;
-    const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length, cz = pts.reduce((a, p) => a + p.z, 0) / pts.length;
-    bossSpawns.push({ x: r1(cx), z: r1(cz), bosses: [...zoneBosses[zone]] });
+    const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length, cz = pts.reduce((a, p) => a + p.z, 0) / pts.length, cy = pts.reduce((a, p) => a + (p.y || 0), 0) / pts.length;
+    bossSpawns.push({ x: r1(cx), z: r1(cz), y: r1(cy), bosses: [...zoneBosses[zone]] });
   }
   g.bossSpawns = bossSpawns;
   g.bosses = (m.bosses || []).map((b) => ({ name: b.boss.name, chance: Math.round((b.spawnChance || 0) * 100) }))

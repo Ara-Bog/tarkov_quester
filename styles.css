@@ -150,7 +150,7 @@ button { font-family: inherit; cursor: pointer; }
 .ico:hover { color: var(--txt); }
 .ico.done:hover, .ico.on-done { background: rgba(111,174,84,.2); color: var(--green); border-color: var(--green); }
 .ico.fail:hover, .ico.on-fail { background: rgba(204,91,70,.2); color: var(--red); border-color: var(--red); }
-.ico.reset:hover { background: var(--bg-hover); }
+.ico.reset:hover { background: rgba(204,91,70,.16); color: var(--red); border-color: var(--red); }
 
 .plan-cb, .plan-all-cb { width: 18px; height: 18px; accent-color: var(--gold); cursor: pointer; }
 .qrow.head .plan-all-cb { margin: 0; }
@@ -264,6 +264,12 @@ button { font-family: inherit; cursor: pointer; }
 /* спавн босса — красный ромб */
 .mk-boss .mk-ico { width: 12px; height: 12px; background: #ff3b3b; border: 2px solid #fff; transform: translate(-50%, -50%) rotate(45deg); box-shadow: 0 0 3px #000; }
 .mk-boss .mk-name { color: #ff9a9a; font-weight: 700; }
+/* подсветка меток при наведении на «Выходы»/«Боссы» в левой менюшке (как pin-hl у квестов) */
+.mk.mk-hl { z-index: 20; opacity: 1 !important; }
+.mk.mk-hl .mk-ico { transition: transform .08s; }
+.mk-ex.mk-hl .mk-ico { transform: translate(-50%, -55%) scale(2.4); }
+.mk-boss.mk-hl .mk-ico { transform: translate(-50%, -50%) rotate(45deg) scale(2.4); }
+.mk.mk-hl .mk-name { font-size: 12px; }
 .boss-legend { font-size: 12.5px; color: var(--txt-dim); margin: 0 0 10px; }
 .boss-legend .muted { color: var(--txt-mut); }
 
@@ -496,7 +502,12 @@ button { font-family: inherit; cursor: pointer; }
 .onb-r { display: flex; align-items: center; gap: 10px; padding: 8px 12px; border-bottom: 1px solid var(--line); font-size: 13px; }
 .onb-r:last-child { border-bottom: none; }
 .onb-r > div { flex: 1; }
-.onb-r .btn-ghost { white-space: nowrap; }
+.onb-r[data-current] { cursor: pointer; }
+.onb-r[data-current]:hover { background: var(--bg-hover); }
+.onb-r .onb-hint { white-space: nowrap; color: var(--gold-dim); font-size: 12px; }
+.onb-r[data-current]:hover .onb-hint { color: var(--gold); }
+.onb-r.added { opacity: .6; }
+.onb-r.added .onb-hint { color: var(--green); }
 
 /* ---------- Сюжетные квесты (главы историй) ---------- */
 .story-list { display: flex; flex-direction: column; gap: 18px; }
