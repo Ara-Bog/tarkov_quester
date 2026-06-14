@@ -229,6 +229,11 @@ button { font-family: inherit; cursor: pointer; }
 .obj-guide { color: var(--gold); font-size: 11px; white-space: nowrap; }
 .obj-guide:hover { text-decoration: underline; }
 .ol li.li-flash { background: rgba(199,169,107,.25); border-radius: 4px; }
+/* подсветка панели при наведении на маркер задачи: кольцо — на весь квест, заливка — на подзадачу */
+/* постоянный padding (с компенсацией margin) — чтобы кольцо имело отступ и при наведении ничего не смещалось */
+.qg[data-quest] { padding: 5px 8px; margin-left: -8px; margin-right: -8px; border-radius: 6px; transition: box-shadow .08s, background .08s; }
+.qg.qg-hl { box-shadow: 0 0 0 1px var(--gold-dim); background: rgba(199,169,107,.06); }
+.ol li.li-hl { background: rgba(199,169,107,.32); border-radius: 4px; transition: background .08s; }
 
 /* ---------- Interactive location map ---------- */
 .map-view { position: relative; border: 1px solid var(--line-2); border-radius: var(--radius); overflow: hidden; background: #0e1418; margin-top: 8px; }

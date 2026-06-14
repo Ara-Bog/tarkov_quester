@@ -2930,6 +2930,22 @@ function wireEvents() {
 				.querySelectorAll(`.pin-dot[data-quest="${tid}"]`)
 				.forEach((p) => p.classList.add("pin-hl"));
 	};
+	// обратная подсветка: при наведении на маркер задачи подсвечиваем в панели и квест целиком, и саму подзадачу
+	let hlPin = null;
+	const setHlPin = (tid, objId) => {
+		if (hlPin === objId) return;
+		hlPin = objId;
+		planView
+			.querySelectorAll(".qg.qg-hl, li.li-hl")
+			.forEach((p) => p.classList.remove("qg-hl", "li-hl"));
+		if (!objId) return;
+		planView
+			.querySelectorAll(`.qg[data-quest="${tid}"]`)
+			.forEach((p) => p.classList.add("qg-hl"));
+		planView
+			.querySelectorAll(`li[data-li-obj="${objId}"]`)
+			.forEach((p) => p.classList.add("li-hl"));
+	};
 	// подсветка меток выходов/боссов при наведении на «Выходы»/«Боссы» в левой менюшке слоёв
 	const LAYER_MK = { extracts: ".mk-ex", bosses: ".mk-boss" };
 	let hlLayer = null;
@@ -2945,6 +2961,11 @@ function wireEvents() {
 				.forEach((p) => p.classList.add("mk-hl"));
 	};
 	planView.addEventListener("mouseover", (e) => {
+		const pin = e.target.closest(".pin-dot[data-pinobj]");
+		if (pin) {
+			setHlPin(pin.dataset.quest, pin.dataset.pinobj);
+			return;
+		}
 		const ly = e.target.closest(".map-layers [data-hllayer]");
 		if (ly) {
 			setHlLayer(ly.dataset.hllayer);
@@ -2955,6 +2976,11 @@ function wireEvents() {
 			setHlQuest(qg.dataset.quest);
 	});
 	planView.addEventListener("mouseout", (e) => {
+		const pin = e.target.closest(".pin-dot[data-pinobj]");
+		if (pin && !pin.contains(e.relatedTarget)) {
+			setHlPin(null);
+			return;
+		}
 		const ly = e.target.closest(".map-layers [data-hllayer]");
 		if (ly && !ly.contains(e.relatedTarget)) {
 			setHlLayer(null);
