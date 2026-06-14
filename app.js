@@ -1175,6 +1175,26 @@ function aggregate(taskIds) {
 	}
 	return { locs, handInItems, handInCats, handInChoices, builds };
 }
+// объединить бакеты локаций (для показа квестов «без локации» на любой карте)
+function combineBuckets(...bs) {
+	const out = { bring: new Map(), choices: [], quests: new Map() };
+	let any = false;
+	for (const b of bs) {
+		if (!b) continue;
+		any = true;
+		for (const [id, e] of b.bring) {
+			const cur = out.bring.get(id);
+			if (!cur) out.bring.set(id, { ...e });
+			else cur.count = e.kind === "key" ? 1 : cur.count + e.count;
+		}
+		out.choices.push(...b.choices);
+		for (const [tid, objs] of b.quests) {
+			if (out.quests.has(tid)) out.quests.get(tid).push(...objs);
+			else out.quests.set(tid, [...objs]);
+		}
+	}
+	return any ? out : null;
+}
 function takeHtml(e) {
 	const cntTxt =
 		e.kind === "key" ? "" : `<span class="cnt">×${e.count}</span>`;
@@ -1703,7 +1723,8 @@ const FLOOR_RU = {
 // под-вкладка локации: карта (всегда, если есть гео) + квесты/выходы/боссы
 function plannerLocationHtml(mapId) {
 	const agg = aggregate(state.active);
-	const b = agg.locs.get(mapId);
+	// квесты этой локации + квесты без привязки к карте (их можно выполнить где угодно)
+	const b = combineBuckets(agg.locs.get(mapId), agg.locs.get("none"));
 	const geo = geoFor(mapId);
 	const slug = mapSlug(mapId);
 	const mapLink = slug
@@ -1738,8 +1759,9 @@ function plannerLocationHtml(mapId) {
 						`<div class="marker" style="--c:${col}"><span class="pin"></span><div class="m-body"><div class="m-q">${esc(t.name)}</div><div class="m-txt"><b>${esc(o.action)}:</b> ${esc(o.description)}</div></div><span class="m-track">${trackControlHtml(o)}</span></div>`,
 					);
 			}
+			const anyLoc = t.maps.length === 0;
 			questGroups.push(
-				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.name)).join("")}</ul></div>`,
+				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}${anyLoc ? ' <span class="anyloc-tag" title="Без привязки к локации — можно выполнить на любой карте">любая локация</span>' : ""}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.name)).join("")}</ul></div>`,
 			);
 		}
 	const exPins = geo

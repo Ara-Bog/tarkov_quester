@@ -583,3 +583,6 @@ details.ss.done[open] > summary.ss-head::before { content: "▾"; }
 .obj .it.catx .cat-items { display: flex; flex-wrap: wrap; gap: 5px; padding: 6px 8px 8px; border-top: 1px dashed var(--line); }
 .obj .it.catx .cat-items .ci { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; background: var(--bg-3); border: 1px solid var(--line); border-radius: 5px; padding: 2px 7px 2px 2px; }
 .obj .it.catx .cat-items .ci img { width: 24px; height: 24px; object-fit: contain; background: #0c0d0e; border-radius: 3px; cursor: zoom-in; }
+
+/* пометка квеста без привязки к локации (показывается на любой карте) */
+.qg .anyloc-tag { font-size: 10px; font-weight: 700; color: #1a1407; background: var(--gold-dim); padding: 1px 7px; border-radius: 9px; margin-left: 6px; vertical-align: middle; white-space: nowrap; }
