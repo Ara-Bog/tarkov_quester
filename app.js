@@ -144,12 +144,41 @@ const DB = (() => {
 let data = null;
 const taskById = new Map();
 const itemById = new Map();
+const itemByName = new Map(); // имя (lowercase) -> id, для разрешения именованных предметов сюжетки
 const mapById = new Map();
 const traderById = new Map();
-const unlocksMap = new Map(); // taskId -> [taskIds it unlocks]
+const unlocksMap = new Map(); // taskId -> [taskIds it unlocks] (требование status=complete)
+const failedUnlocksMap = new Map(); // taskId -> [taskIds, которые открываются, когда этот ПРОВАЛЕН]
 const failsOnComplete = new Map(); // taskId -> [taskIds that fail when this completes]
 let failedAll = new Set();
 let collectorTask = null; // квест "Коллекционер" (предметы для Каппы)
+
+// emoji-иконка для категории/именованного предмета по ключевым словам (различать по картинке, не по тексту)
+const CAT_EMOJI = [
+	[/оружи|пистолет|винтовк|автомат|дробовик|пулемёт|пулемет|снайпер|weapon/i, "🔫"],
+	[/патрон|боеприпас|ammo/i, "🟡"],
+	[/медицин|медик|медикамент|лекарств|аптеч|таблет|стимул|инъект|meds|medical/i, "💊"],
+	[/строймат|строительн|building/i, "🧱"],
+	[/инструмент|tool/i, "🔧"],
+	[/ремонт|ремкомпл|repair/i, "🧰"],
+	[/жетон|dogtag/i, "🏷️"],
+	[/батаре|аккумулятор|battery/i, "🔋"],
+	[/электрон|микросхем|плата|платы|чип|компьютер|комплектующ|electronic/i, "🔌"],
+	[/контейнер|кейс|container|case/i, "🧳"],
+	[/(?<![а-яё])еда(?![а-яё])|напитк|провизи|питани|пайк|консерв|сухпай|снэк|провиант|food/i, "🥫"],
+	[/ключ|key/i, "🔑"],
+	[/брон|armor|защит|шлем|каск/i, "🛡️"],
+	[/ценн|бартер|valuable|драгоцен/i, "💎"],
+	[/информ|документ|кассет|флешк|жёстк|жестк|записк|отчёт|отчет|стенограмм|носител|intel|data/i, "💾"],
+	[/топлив|fuel|бензин|горюч/i, "⛽"],
+	[/одежд|снаряж|разгруз|рюкзак|сумк|gear/i, "🎒"],
+	[/табак|сигарет|алкогол/i, "🚬"],
+];
+function catEmoji(text, isCat) {
+	const s = String(text || "");
+	for (const [re, e] of CAT_EMOJI) if (re.test(s)) return e;
+	return isCat ? "📋" : "📦";
+}
 
 // ---- Прогресс по целям квестов (сделано из N) -------------------------
 const objDone = (id) => state.progress[id] || 0;
@@ -173,6 +202,9 @@ const state = {
 	planChoices: {},
 	findGroups: [], // [{id,name,desc,items:[{id,found,qty}]}]
 	progress: {}, // objectiveId -> сколько единиц цели уже сделано
+	storyDone: new Set(), // id выполненных подзадач сюжетных квестов
+	storyBranch: {}, // questId -> выбранная ветка (концовка) сюжетного квеста
+	storyStarted: new Set(), // id начатых сюжетных квестов («Начать главу»)
 };
 const ui = {
 	view: "mine",
@@ -320,11 +352,15 @@ function reqMet(t) {
 	for (const r of t.requires || []) {
 		const st = r.status || ["complete"];
 		let ok = false;
+		// complete — предыдущий квест выполнен
+		if (st.includes("complete") && state.completed.has(r.task)) ok = true;
+		// active — предыдущий квест взят/в работе (или уже выполнен); НЕ требует завершения
 		if (
-			(st.includes("complete") || st.includes("active")) &&
-			state.completed.has(r.task)
+			st.includes("active") &&
+			(state.active.has(r.task) || state.completed.has(r.task))
 		)
 			ok = true;
+		// failed — предыдущий квест должен быть провален (ветка-альтернатива)
 		if (st.includes("failed") && failedAll.has(r.task)) ok = true;
 		if (!ok) return false;
 	}
@@ -340,14 +376,22 @@ function statusOf(t) {
 // ---------- Build indices ----------------------------------------------
 function buildIndices() {
 	data.tasks.forEach((t) => taskById.set(t.id, t));
-	Object.values(data.items).forEach((i) => itemById.set(i.id, i));
+	Object.values(data.items).forEach((i) => {
+		itemById.set(i.id, i);
+		if (i.name) itemByName.set(i.name.toLowerCase(), i.id);
+	});
 	data.maps.forEach((m) => mapById.set(m.id, m));
 	data.traders.forEach((t) => traderById.set(t.id, t));
 	for (const t of data.tasks) {
 		for (const r of t.requires || []) {
-			if ((r.status || ["complete"]).includes("complete")) {
+			const rst = r.status || ["complete"];
+			if (rst.includes("complete")) {
 				if (!unlocksMap.has(r.task)) unlocksMap.set(r.task, []);
 				unlocksMap.get(r.task).push(t.id);
+			}
+			if (rst.includes("failed")) {
+				if (!failedUnlocksMap.has(r.task)) failedUnlocksMap.set(r.task, []);
+				failedUnlocksMap.get(r.task).push(t.id);
 			}
 		}
 		for (const fid of t.failedBy || []) {
@@ -426,6 +470,14 @@ async function loadState() {
 	state.planChoices = (await DB.get("planChoices", {})) || {};
 	state.findGroups = (await DB.get("findGroups", [])) || [];
 	state.progress = (await DB.get("progress", {})) || {};
+	state.storyDone = new Set(await DB.get("storyDone", []));
+	state.storyBranch = (await DB.get("storyBranch", {})) || {};
+	state.storyStarted = new Set(await DB.get("storyStarted", []));
+}
+async function persistStory() {
+	await DB.set("storyDone", [...state.storyDone]);
+	await DB.set("storyBranch", state.storyBranch);
+	await DB.set("storyStarted", [...state.storyStarted]);
 }
 
 // ---------- Mutations ---------------------------------------------------
@@ -437,8 +489,15 @@ function setStatus(id, st) {
 	recomputeFailed();
 	// auto-add newly unlocked quests into "мои квесты"
 	if (st === "completed") {
+		// кандидаты: прямые разблокировки (требование complete) +
+		// разблокировки через провал альтернатив, которые провалились из-за этого завершения
+		const candidates = new Set(unlocksMap.get(id) || []);
+		for (const nf of failsOnComplete.get(id) || []) {
+			if (failedAll.has(nf))
+				for (const u of failedUnlocksMap.get(nf) || []) candidates.add(u);
+		}
 		const added = [];
-		for (const uid of unlocksMap.get(id) || []) {
+		for (const uid of candidates) {
 			if (
 				state.completed.has(uid) ||
 				failedAll.has(uid) ||
@@ -471,11 +530,10 @@ function markAsCurrent(id) {
 		const t = taskById.get(qid);
 		if (!t) return;
 		for (const r of t.requires || []) {
+			// идём только по основной ветке (status=complete); active/failed-ветки
+			// не достраиваем — это альтернативные/опциональные предыдущие квесты
 			const st = r.status || ["complete"];
-			if (
-				(st.includes("complete") || st.includes("active")) &&
-				!toComplete.has(r.task)
-			) {
+			if (st.includes("complete") && !st.includes("failed") && !toComplete.has(r.task)) {
 				toComplete.add(r.task);
 				collect(r.task);
 			}
@@ -567,11 +625,7 @@ function togglePlan(id) {
 		cb.checked = state.plan.has(id);
 	});
 }
-function renderActiveViews() {
-	if (ui.view === "mine") renderQuests("mine");
-	else if (ui.view === "all") renderQuests("all");
-	else if (ui.view === "planner") renderPlanner();
-}
+// «выбрать все» в шапке «Мои квесты» — добавить/убрать все показанные квесты из плана рейда
 function toggleAllPlan(scope, checked) {
 	const list = filteredTasks(scope);
 	if (checked) {
@@ -579,7 +633,7 @@ function toggleAllPlan(scope, checked) {
 		if (
 			toAdd.length > 5 &&
 			!confirm(
-				`В План рейда будут добавлены все ${toAdd.length} показанных квестов. Продолжить?`,
+				`В план рейда будут добавлены все ${toAdd.length} показанных квестов. Продолжить?`,
 			)
 		) {
 			renderQuests(scope);
@@ -593,7 +647,11 @@ function toggleAllPlan(scope, checked) {
 	renderStats();
 	renderQuests(scope);
 }
-
+function renderActiveViews() {
+	if (ui.view === "mine") renderQuests("mine");
+	else if (ui.view === "all") renderQuests("all");
+	else if (ui.view === "planner") renderPlanner();
+}
 // ---------- Filtering & sorting ----------------------------------------
 function baseTasks(scope) {
 	return scope === "mine"
@@ -723,13 +781,13 @@ function bringMini(t) {
 }
 function handInMini(t) {
 	const m = new Map();
-	let cats = 0,
-		builds = 0,
+	const cats = [];
+	let builds = 0,
 		anyN = 0;
 	for (const o of t.objectives)
 		for (const h of o.handIn) {
 			if (h.kind === "category") {
-				cats++;
+				cats.push({ emoji: catEmoji(h.category, true), label: h.category, count: h.count || 1 });
 				continue;
 			}
 			if (h.kind === "build") {
@@ -754,8 +812,14 @@ function handInMini(t) {
 				`<span class="it hand" title="${esc(itemName(e.id))} — ${e.fir ? "найти в рейде и сдать" : "купить/найти и сдать"}">${itImg(e.id)}<span class="cnt">${e.count}</span></span>`,
 		)
 		.join("");
-	if (cats)
-		html += `<span class="more" title="любой предмет категории">📋${cats > 1 ? "×" + cats : ""}</span>`;
+	// категория — иконка-эмодзи размером с превью предмета (как у остальных)
+	html += cats
+		.slice(0, 4)
+		.map(
+			(c) =>
+				`<span class="it hand cat" title="${esc(c.label)}"><span class="cat-emoji">${c.emoji}</span><span class="cnt">${c.count}</span></span>`,
+		)
+		.join("");
 	if (builds)
 		html += `<span class="more" title="собрать оружие и сдать">🔧${builds > 1 ? "×" + builds : ""}</span>`;
 	if (anyN) html += `<span class="more" title="один из нескольких">…</span>`;
@@ -763,8 +827,7 @@ function handInMini(t) {
 }
 function questRowHtml(t, scope) {
 	const st = statusOf(t);
-	const inPlan = state.plan.has(t.id),
-		inActive = state.active.has(t.id);
+	const inActive = state.active.has(t.id);
 	const locChips =
 		t.maps
 			.map(
@@ -780,8 +843,13 @@ function questRowHtml(t, scope) {
 			'<span class="star" title="Требуется для Каппы">★ Каппа</span>',
 		);
 	const cls = `qrow${st === "completed" ? " done" : ""}${st === "failed" ? " failed" : ""}${inActive ? " in-active" : ""}`;
+	// «Мои квесты» — чекбокс «в план рейда»; «Все квесты» — кнопка «+» (добавить в мои квесты)
+	const firstCell =
+		scope === "mine"
+			? `<input type="checkbox" class="plan-cb" data-id="${t.id}" ${state.plan.has(t.id) ? "checked" : ""} title="Добавить в план рейда">`
+			: `<button class="ico plan-add${inActive ? " on-active" : ""}" data-act="active" data-id="${t.id}" title="${inActive ? "Убрать из моих квестов" : "Добавить в мои квесты"}">${inActive ? "✓" : "+"}</button>`;
 	return `<div class="${cls}" data-id="${t.id}">
-    <input type="checkbox" class="plan-cb" data-id="${t.id}" ${inPlan ? "checked" : ""} title="Добавить в план рейда">
+    ${firstCell}
     <div><span class="badge b-${st}">${STATUS_RU[st]}</span></div>
     <div class="qname">${esc(t.name)}${inActive ? ' <span class="mine-tag" title="В моих квестах">★</span>' : ""}<span class="sub">${sub.join(" · ")}</span></div>
     <div class="chips">${locChips}</div>
@@ -799,11 +867,13 @@ function sortArrow(col) {
 		? `<span class="arr">${ui.sort.dir > 0 ? "▲" : "▼"}</span>`
 		: "";
 }
-function headerHtml(list) {
-	const allChecked =
-		list.length > 0 && list.every((t) => state.plan.has(t.id));
+function headerHtml(list, scope) {
+	const firstHead =
+		scope === "mine"
+			? `<div><input type="checkbox" class="plan-all-cb" ${list.length > 0 && list.every((t) => state.plan.has(t.id)) ? "checked" : ""} title="Добавить все показанные квесты в план рейда"></div>`
+			: `<div title="Добавить в мои квесты">+</div>`;
 	return `<div class="qrow head">
-    <div><input type="checkbox" class="plan-all-cb" ${allChecked ? "checked" : ""} title="Добавить все показанные квесты в План рейда"></div>
+    ${firstHead}
     <div class="sortable" data-sort="status">Статус ${sortArrow("status")}</div>
     <div class="sortable" data-sort="name">Квест ${sortArrow("name")}</div>
     <div class="sortable" data-sort="loc">Локации ${sortArrow("loc")}</div>
@@ -839,9 +909,21 @@ function objHtml(o, qname) {
 	}
 	for (const h of o.handIn) {
 		if (h.kind === "category") {
-			its.push(
-				`<span class="it cat" title="${esc(h.category)}">📋 ${esc(shorten(h.category, 48))}<span class="cnt">×${h.count || 1}</span><span class="firlbl">${h.fir ? "найти в рейде" : "купить/найти"}</span></span>`,
-			);
+			const head = `<span class="cat-ic">${catEmoji(h.category, true)}</span>${esc(shorten(h.category, 60))}<span class="cnt">×${h.count || 1}</span><span class="firlbl">${h.fir ? "найти в рейде" : "купить/найти"}</span>`;
+			const list = h.items || [];
+			if (list.length) {
+				// раскрывающийся список всех подходящих предметов категории
+				its.push(
+					`<details class="it cat catx" title="${esc(h.category)}"><summary class="cat-sum">${head}<span class="cat-n">${list.length} предм.</span></summary><div class="cat-items">${list
+						.map(
+							(id) =>
+								`<span class="ci" title="${esc(itemName(id))}">${itImg(id)}${esc(itemShort(id))}</span>`,
+						)
+						.join("")}</div></details>`,
+				);
+			} else {
+				its.push(`<span class="it cat" title="${esc(h.category)}">${head}</span>`);
+			}
 			continue;
 		}
 		if (h.anyOf) {
@@ -920,9 +1002,7 @@ function depsHtml(t) {
 	return `<div class="deps">${lines.join("")}</div>`;
 }
 function questDetailHtml(t) {
-	const inActive = state.active.has(t.id);
-	const addBtn = `<button class="btn-add-mine ${inActive ? "remove" : ""}" data-act="active" data-id="${t.id}">${inActive ? "− Убрать из моих квестов" : "+ Добавить в мои квесты"}</button>`;
-	return `<div class="qdetail" data-detail="${t.id}"><div class="qd-add">${addBtn}</div>${t.objectives.map((o) => objHtml(o, t.name)).join("")}${depsHtml(t)}</div>`;
+	return `<div class="qdetail" data-detail="${t.id}">${t.objectives.map((o) => objHtml(o, t.name)).join("")}${depsHtml(t)}</div>`;
 }
 
 function onbResultsHtml() {
@@ -958,7 +1038,7 @@ function renderQuests(scope) {
 		scope === "mine" ? "view-mine" : "view-all",
 	);
 	let html = scope === "mine" ? onboardingHtml() : "";
-	html += `<div class="qtable">${headerHtml(list)}`;
+	html += `<div class="qtable">${headerHtml(list, scope)}`;
 	if (!list.length) {
 		html +=
 			scope === "mine"
@@ -1157,54 +1237,91 @@ const blkSwitch = (k, on) =>
 // задач — их находишь в любом рейде, поэтому показываем на каждой локации) + предметы «Список находок».
 function findInRaidRows(mapId) {
 	const rows = [];
-	// 1) предметы квестов «найти в рейде» — берём только те, что МОЖНО добыть на этой локации:
-	//    смотрим на objective, где предмет ИЩЕТСЯ (Найти/Найти предмет/Сдать-найдя-в-рейде), и
-	//    его привязку к карте. Пусто — предмет находится в любом рейде → показываем везде.
-	//    «Сдать предмет» (giveQuestItem) пропускаем — это шаг сдачи, а не место находки.
-	const byItem = new Map(); // id -> { count, quests:Set }
-	for (const id of state.active) {
-		const t = taskById.get(id);
-		if (!t) continue;
-		// в пределах квеста один и тот же предмет (найти + сдать) — это один экземпляр, берём максимум
-		const perQuest = new Map();
-		for (const o of t.objectives) {
-			if (trackable(o) && objRemaining(o) === 0 && objDone(o.id) > 0)
-				continue;
-			const isFind =
-				o.type === "findItem" ||
-				o.type === "findQuestItem" ||
-				o.type === "giveItem"; // giveItem = «найти в рейде и сдать» (если fir)
-			if (!isFind) continue;
+	const byItem = new Map(); // id предмета -> { count, quests:Set }
+	const byText = new Map(); // категория/название без id -> { count, quests:Set, cat:bool }
+
+	// собрать цели поиска из квеста (обычного или сюжетного) на этой локации
+	function consume(qname, objectives, isStory) {
+		const pqItem = new Map(),
+			pqText = new Map();
+		for (const o of objectives) {
+			if (isStory) {
+				if (state.storyDone.has(o.id)) continue;
+			} else {
+				if (trackable(o) && objRemaining(o) === 0 && objDone(o.id) > 0)
+					continue;
+				// обычные квесты: только объективы, где предмет ИЩЕТСЯ (не «сдать предмет»)
+				const isFind =
+					o.type === "findItem" ||
+					o.type === "findQuestItem" ||
+					o.type === "giveItem";
+				if (!isFind) continue;
+			}
 			const anywhere = !o.maps || o.maps.length === 0;
 			if (!anywhere && !o.maps.includes(mapId)) continue; // на этой локации не добыть
 			for (const h of o.handIn || []) {
-				if (!h.item || !(h.kind === "find" || h.fir)) continue;
-				perQuest.set(
-					h.item,
-					Math.max(perQuest.get(h.item) || 0, h.count || 1),
-				);
+				const fir = h.fir || h.kind === "find";
+				// обычные квесты — только FiR; сюжетные — всё, что нужно добыть/сдать
+				if (!isStory && !fir) continue;
+				const cnt = h.count || 1;
+				// именованный предмет пробуем разрешить в реальный id (тогда будет настоящая иконка)
+				let iid = h.item;
+				if (!iid && h.name) iid = itemByName.get(h.name.toLowerCase());
+				if (iid) {
+					pqItem.set(iid, Math.max(pqItem.get(iid) || 0, cnt));
+				} else {
+					const txt = h.category || h.name;
+					if (!txt) continue;
+					const cur = pqText.get(txt);
+					pqText.set(txt, {
+						count: Math.max(cur ? cur.count : 0, cnt),
+						cat: !!h.category,
+					});
+				}
 			}
 		}
-		for (const [iid, c] of perQuest) {
+		for (const [iid, c] of pqItem) {
 			const e = byItem.get(iid) || { count: 0, quests: new Set() };
-			e.count += c; // между разными квестами нужны отдельные экземпляры — суммируем
-			e.quests.add(t.name);
+			e.count += c;
+			e.quests.add(qname);
 			byItem.set(iid, e);
 		}
+		for (const [txt, v] of pqText) {
+			const e = byText.get(txt) || { count: 0, quests: new Set(), cat: v.cat };
+			e.count += v.count;
+			e.quests.add(qname);
+			byText.set(txt, e);
+		}
 	}
+
+	for (const id of state.active) {
+		const t = taskById.get(id);
+		if (t) consume(t.name, t.objectives, false);
+	}
+	// сюжетные квесты (начатые, текущая стадия)
+	for (const q of (storyData && storyData.quests) || []) {
+		if (!(q.autostart || state.storyStarted.has(q.id))) continue;
+		consume(q.name, storyActiveObjectives(q), true);
+	}
+
+	const tagHtml = (qn) =>
+		`<span class="fg-tag quest" title="Для квеста: ${esc(qn.join(", "))}">${esc(qn.length === 1 ? qn[0] : qn.length + " квеста")}</span>`;
 	for (const [id, e] of byItem) {
 		const it = itemById.get(id) || {};
 		const ic = it.icon || it.img;
 		const img = ic
 			? `<img src="${ic}" data-item="${id}" data-itemimg="${it.img || it.icon || ""}" onerror="this.style.display='none'">`
 			: "";
-		const qn = [...e.quests];
-		const tag = qn.length === 1 ? qn[0] : `${qn.length} квеста`;
 		rows.push(
-			`<li>${img}<span class="nm">${esc(itemName(id))}</span><span class="cnt">×${e.count}</span><span class="fg-tag quest" title="Для квеста: ${esc(qn.join(", "))}">${esc(tag)}</span></li>`,
+			`<li>${img}<span class="nm">${esc(itemName(id))}</span><span class="cnt">×${e.count}</span>${tagHtml([...e.quests])}</li>`,
 		);
 	}
-	// 2) предметы из вкладки «Список находок»
+	for (const [txt, e] of byText) {
+		rows.push(
+			`<li class="cat-row"><span class="cat-ico" title="${e.cat ? "категория предметов" : "предмет"}">${catEmoji(txt, e.cat)}</span><span class="nm">${esc(txt)}</span><span class="cnt">×${e.count}</span>${tagHtml([...e.quests])}</li>`,
+		);
+	}
+	// предметы из вкладки «Список находок»
 	rows.push(...findingsRowsHtml());
 	return rows;
 }
@@ -1227,6 +1344,17 @@ function findingsCornerBlock(mapId) {
       <div class="le-head"><span class="sec-label">Найти в рейде</span>${blkSwitch("findings", ui.showFindings)}</div>
       <div class="le-body"${ui.showFindings ? "" : " hidden"}><ul class="fg-items">${rows.join("")}</ul></div>
     </div>`;
+}
+// блок сюжетных задач текущей стадии на этой локации (без точек на карте — у них нет координат)
+function storyLocBlock(mapId) {
+	const tasks = storyTasksForMap(mapId);
+	if (!tasks.length) return "";
+	return `<div class="obj-by-quest story-loc"><div class="sec-label">Сюжетные задачи</div><ul class="ol">${tasks
+		.map(
+			({ q, o }) =>
+				`<li><span class="li-txt"><span class="a" style="color:var(--gold)">${esc(q.name)}</span> — <b>${esc(o.action)}:</b> ${esc(o.desc)}${o.fir ? ' <span class="firlbl">FiR</span>' : ""}</span></li>`,
+		)
+		.join("")}</ul></div>`;
 }
 
 // случайный, но стабильный и контрастный цвет для квеста
@@ -1636,7 +1764,7 @@ function plannerLocationHtml(mapId) {
 			? `<div class="boss-legend">☠ Боссы: ${geo.bosses.map((x) => `${esc(x.name)} <span class="muted">${x.chance}%</span>`).join(" · ")}</div>`
 			: "";
 
-	const cornerPanel = `<div class="map-quests"><div class="mq-head">Текущие задачи</div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}${findingsCornerBlock(mapId)}</div>`;
+	const cornerPanel = `<div class="map-quests"><div class="mq-head">Текущие задачи</div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}${storyLocBlock(mapId)}${findingsCornerBlock(mapId)}</div>`;
 	const lyr = (k, label) =>
 		`<label><input type="checkbox" data-layer="${k}" ${ui.mapLayers[k] ? "checked" : ""}> ${label}</label>`;
 	const mapPanel = geo
@@ -1686,6 +1814,7 @@ function plannerLocationHtml(mapId) {
           <div class="sec-label">Взять с собой / заложить</div>
           ${takes ? `<div class="take-list">${takes}</div>` : '<div class="empty-note">Ничего закладывать не нужно.</div>'}
           <div class="obj-by-quest"><div class="sec-label">Задачи <span class="muted" style="font-weight:400">— отметьте выполнение, маркер скроется</span></div>${questGroups.join("") || '<div class="empty-note">Нет активных задач.</div>'}</div>
+          ${storyLocBlock(mapId)}
         </div></div>
         ${findingsLocCard(mapId)}
       </aside>
@@ -1879,6 +2008,182 @@ function initMap() {
 				);
 			}),
 		);
+}
+
+// ---------- Сюжетные квесты (главы историй) -----------------------------
+let storyData = null;
+async function loadStoryData() {
+	if (storyData) return storyData;
+	try {
+		const r = await fetch("data/story-quests.json", { cache: "no-cache" });
+		if (r.ok) {
+			storyData = await r.json();
+			return storyData;
+		}
+	} catch {}
+	if (window.__STORY__) {
+		storyData = window.__STORY__;
+		return storyData;
+	}
+	try {
+		await injectScript("data/story-quests.js");
+		storyData = window.__STORY__ || { quests: [] };
+	} catch {
+		storyData = { quests: [] };
+	}
+	return storyData;
+}
+// стадия выполнена, если выполнены все её ОБЯЗАТЕЛЬНЫЕ цели (необязательные не блокируют)
+function storyStageDone(stage) {
+	return stage.objectives.every(
+		(o) => o.optional || state.storyDone.has(o.id),
+	);
+}
+// индекс активной стадии в списке = первая невыполненная (все предыдущие выполнены); == длине, если всё пройдено
+function stagesActiveIndex(stages) {
+	let i = 0;
+	while (i < stages.length && storyStageDone(stages[i])) i++;
+	return i;
+}
+function storyObjHtml(o) {
+	const done = state.storyDone.has(o.id);
+	const locs = (o.maps || [])
+		.map(
+			(m) =>
+				`<span class="so-loc" style="--c:${mapColor(m)}">${esc(mapName(m))}</span>`,
+		)
+		.join("");
+	const fir = o.fir ? ` <span class="firlbl">FiR</span>` : "";
+	const opt = o.optional ? ` <span class="so-optlbl">необяз.</span>` : "";
+	return `<li class="so${done ? " so-done" : ""}${o.optional ? " so-opt" : ""}">
+			<label class="so-check"><input type="checkbox" data-story="${o.id}" ${done ? "checked" : ""}><span class="so-box"></span></label>
+			<span class="so-txt"><span class="so-act">${esc(o.action)}:</span> ${esc(o.desc)}${opt}${fir} ${locs}</span>
+		</li>`;
+}
+// отрисовка списка стадий; baseNum — смещение нумерации (для веток продолжаем нумерацию после общих стадий)
+function storyStagesHtml(stages, act, baseNum) {
+	return stages
+		.map((st, i) => {
+			const n = baseNum + i + 1;
+			const locked = i > act,
+				isDone = i < act;
+			const badge = isDone
+				? '<span class="ss-badge done">✓</span>'
+				: i === act
+					? '<span class="ss-badge cur">текущая</span>'
+					: '<span class="ss-badge lock">🔒</span>';
+			const head = `<span class="ss-no">Стадия ${n}</span> <span class="ss-title">${esc(st.title || "")}</span> ${badge}`;
+			if (locked)
+				return `<div class="ss locked"><div class="ss-head">${head}</div><div class="ss-hint">Откроется после выполнения стадии ${n - 1}.</div></div>`;
+			const objs = `<ul class="so-list">${st.objectives.map(storyObjHtml).join("")}</ul>`;
+			if (isDone)
+				return `<details class="ss done"><summary class="ss-head">${head}</summary>${objs}</details>`;
+			return `<div class="ss cur"><div class="ss-head">${head}</div>${objs}</div>`;
+		})
+		.join("");
+}
+function storyQuestHtml(q) {
+	const stages = q.stages || [];
+	const wikiLnk = q.wiki
+		? ` · <a href="${q.wiki}" target="_blank" rel="noopener">wiki ↗</a>`
+		: "";
+	// заглушка (нет подзадач на вики)
+	if (!stages.length && !(q.branches && q.branches.length)) {
+		return `<article class="story-card stub">
+			<div class="story-top"><h2>${esc(q.name)}</h2><div class="story-meta">Сюжетный квест${wikiLnk}</div></div>
+			<div class="ss-hint" style="margin-top:8px">${esc(q.stub || "Подзадачи появятся позже.")}</div>
+		</article>`;
+	}
+	// глава ещё не начата — показываем кнопку «Начать» (кроме автостарта, напр. «Тур»)
+	const started = q.autostart || state.storyStarted.has(q.id);
+	if (!started) {
+		const totalStages =
+			stages.length +
+			(q.branches && q.branches.length ? " + ветки" : "");
+		return `<article class="story-card notstarted">
+			<div class="story-top"><h2>${esc(q.name)}</h2><div class="story-meta">Сюжетный квест · ${totalStages} стадий · не начата${wikiLnk}</div></div>
+			${q.description ? `<p class="story-desc">${esc(q.description)}</p>` : ""}
+			<div class="story-start"><button class="btn-gold" data-start="${q.id}">▶ Начать главу</button><span class="muted">Первый этап откроется после старта</span></div>
+		</article>`;
+	}
+	const cAct = stagesActiveIndex(stages),
+		cLen = stages.length,
+		commonDone = cAct >= cLen;
+	let html = storyStagesHtml(stages, cAct, 0);
+	let doneStages = Math.min(cAct, cLen),
+		totalStages = cLen,
+		finished = commonDone;
+
+	const branches = q.branches || [];
+	if (branches.length) {
+		if (!commonDone) {
+			html += `<div class="ss locked"><div class="ss-head"><span class="ss-no">Развилка</span> <span class="ss-title">${esc(q.branchPoint || "Выбор пути")}</span> <span class="ss-badge lock">🔒</span></div><div class="ss-hint">Откроется после общих стадий — выбор из ${branches.length} концовок.</div></div>`;
+			finished = false;
+		} else {
+			const br = branches.find((b) => b.id === state.storyBranch[q.id]);
+			if (!br) {
+				html += `<div class="branch-choose"><div class="bc-title">⑂ ${esc(q.branchPoint || "Развилка — выберите путь")}</div><div class="bc-opts">${branches
+					.map(
+						(b) =>
+							`<button class="bc-opt" data-branch="${q.id}|${b.id}"><span class="bc-lab">${esc(b.label)}</span><span class="bc-cnt">${b.stages.length} стадий →</span></button>`,
+					)
+					.join("")}</div></div>`;
+				finished = false;
+			} else {
+				const bAct = stagesActiveIndex(br.stages);
+				html += `<div class="branch-active"><div class="bc-head">Путь: <b>${esc(br.label)}</b> <button class="bc-switch" data-branch="${q.id}|">← сменить</button></div>${storyStagesHtml(br.stages, bAct, cLen)}</div>`;
+				doneStages += Math.min(bAct, br.stages.length);
+				totalStages += br.stages.length;
+				finished = bAct >= br.stages.length;
+			}
+		}
+	}
+	return `<article class="story-card${finished ? " fin" : ""}">
+		<div class="story-top">
+			<h2>${esc(q.name)}${finished ? ' <span class="ss-badge done">✓ завершён</span>' : ""}</h2>
+			<div class="story-meta">Сюжетный квест · ${doneStages} / ${totalStages} стадий${q.wiki ? ` · <a href="${q.wiki}" target="_blank" rel="noopener">wiki ↗</a>` : ""}</div>
+		</div>
+		${q.description ? `<p class="story-desc">${esc(q.description)}</p>` : ""}
+		<div class="story-stages">${html}</div>
+		${q.rewards && q.rewards.length ? `<div class="story-rewards"><b>Награды:</b> ${q.rewards.map(esc).join(" · ")}</div>` : ""}
+	</article>`;
+}
+function renderStory() {
+	const root = document.getElementById("view-story");
+	const qs = (storyData && storyData.quests) || [];
+	if (!qs.length) {
+		root.innerHTML = `<div class="planner-empty">Сюжетные квесты не загружены.</div>`;
+		return;
+	}
+	const ordered = [...qs].sort((a, b) => (a.order || 99) - (b.order || 99));
+	root.innerHTML = `
+		<div class="page-head"><h2>Сюжетные квесты</h2><span class="ph-sub">${ordered.length} глав · подзадачи открываются по мере прохождения</span></div>
+		<div class="story-list">${ordered.map(storyQuestHtml).join("")}</div>`;
+}
+// объективы ТЕКУЩЕЙ активной стадии сюжетного квеста (общей или внутри выбранной ветки)
+function storyActiveObjectives(q) {
+	const stages = q.stages || [];
+	const cAct = stagesActiveIndex(stages);
+	if (cAct < stages.length) return stages[cAct].objectives;
+	const branches = q.branches || [];
+	const br = branches.find((b) => b.id === state.storyBranch[q.id]);
+	if (br) {
+		const bAct = stagesActiveIndex(br.stages);
+		if (bAct < br.stages.length) return br.stages[bAct].objectives;
+	}
+	return [];
+}
+// сюжетные задачи (начатых квестов, текущая стадия, не выполненные) на указанной локации
+function storyTasksForMap(mapId) {
+	const out = [];
+	for (const q of (storyData && storyData.quests) || []) {
+		if (!(q.autostart || state.storyStarted.has(q.id))) continue;
+		for (const o of storyActiveObjectives(q)) {
+			if (state.storyDone.has(o.id)) continue;
+			if ((o.maps || []).includes(mapId)) out.push({ q, o });
+		}
+	}
+	return out;
 }
 
 // ---------- Finder (Список находок) ------------------------------------
@@ -2077,6 +2382,7 @@ const PAGE = {
 	planner: "planner.html",
 	finder: "finder.html",
 	kappa: "kappa.html",
+	story: "story.html",
 };
 // ссылка на квест (открывается на странице «Все квесты»)
 const questUrl = (id) => `all.html?q=${encodeURIComponent(id)}`;
@@ -2086,7 +2392,7 @@ function shellHtml(av) {
 	return `
   <header class="topbar">
     <a class="brand" href="index.html" title="На главную"><h1>Квестовик</h1><span class="meta" id="meta"></span></a>
-    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("all", "Все квесты")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}</nav>
+    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("all", "Все квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}</nav>
   </header>
   <main class="wrap">
     <section class="filters" id="filters">
@@ -2108,24 +2414,26 @@ function shellHtml(av) {
       <p class="lead">Помогает собираться в рейд осмысленно: что взять с собой, что найти и сдать, какие квесты сейчас доступны и куда идти — всё в разрезе локаций.</p>
       <h3>Что внутри</h3>
       <ul>
-        <li><b>Мои квесты</b> — только активные квесты. При выполнении следующие по ветке добавляются автоматически. Сверху — быстрая настройка прогресса, если вы уже в середине игры.</li>
-        <li><b>Все квесты</b> — полный список с фильтрами и сортировкой, зависимостями (что требует / открывает / провалит) и кнопкой добавить «в мои квесты».</li>
-        <li><b>План рейда</b> — отмечаете квесты, и приложение собирает по локациям, что <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>; карты локаций с маркерами.</li>
-        <li><b>Список находок</b> — личные списки предметов по группам с описанием и количеством.</li>
-        <li><b>Каппа</b> — отслеживание предметов для контейнера Каппа (квест «Коллекционер»).</li>
+        <li><b>Мои квесты</b> — активные квесты. При выполнении следующие по цепочке добавляются автоматически. Сверху — быстрая настройка, если вы уже в середине игры.</li>
+        <li><b>Все квесты</b> — полный каталог с фильтрами и сортировкой. Видно, что квест требует, что открывает и какие квесты провалятся при его выполнении.</li>
+        <li><b>Сюжетные</b> — главы историй: большие квесты, подзадачи которых открываются постепенно по стадиям, с выбором концовки у некоторых.</li>
+        <li><b>План рейда</b> — отмеченные квесты, собранные по локациям: что <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>. Карты локаций с маркерами целей, выходами и спавнами боссов.</li>
+        <li><b>Список находок</b> — личные списки предметов по группам с искомым количеством.</li>
+        <li><b>Каппа</b> — предметы для контейнера Каппа: чек-лист с прогрессом и поиском.</li>
       </ul>
       <h3>Зачем это нужно</h3>
-      <p>Перед рейдом удобно за минуту понять: какие квесты я могу сделать на этой локации, что для них взять (маркеры, камеры, ключи, предметы для закладки), что нужно найти и сдать, и сколько ещё осталось — чтобы не таскать лишнее и не забывать цели.</p>
+      <p>Перед рейдом за минуту понятно: какие квесты можно сделать на этой локации, что для них взять, что найти и сдать и сколько ещё осталось — чтобы не таскать лишнее и не забывать цели.</p>
       <h3>Предложения по улучшению</h3>
       <p>Идеи и замечания присылайте на <a href="mailto:mixic-pro@mail.ru">mixic-pro@mail.ru</a>.</p>
       <h3>Данные</h3>
-      <p>Все данные по квестам, предметам и иконкам берутся из открытого проекта <a href="https://tarkov.dev" target="_blank" rel="noopener">tarkov.dev</a>. Прогресс хранится локально в вашем браузере (IndexedDB) — сервера и регистрации нет.</p>
+      <p>Квесты, предметы, иконки и карты берутся из открытого проекта <a href="https://tarkov.dev" target="_blank" rel="noopener">tarkov.dev</a>. Прогресс хранится локально в вашем браузере — сервера и регистрации нет.</p>
     </div></section>
     <section id="view-mine"></section>
     <section id="view-all" class="hidden"></section>
     <section id="view-planner" class="hidden"></section>
     <section id="view-finder" class="hidden"></section>
     <section id="view-kappa" class="hidden"></section>
+    <section id="view-story" class="hidden"></section>
   </main>
   <div id="cookie-bar" class="hidden"><span>Сайт использует куки (а кто их не использует). Там буквально 1 запись, чтобы показать эту плашку :)</span><button id="cookie-ok" class="btn-gold">Ок</button></div>
   <div id="lightbox" class="hidden"><div class="lb-inner"><img id="lb-img" src="" alt="" /><div id="lb-name"></div></div></div>
@@ -2133,7 +2441,7 @@ function shellHtml(av) {
 }
 function setView(v) {
 	ui.view = v;
-	["home", "mine", "all", "planner", "finder", "kappa"].forEach((x) =>
+	["home", "mine", "all", "planner", "finder", "kappa", "story"].forEach((x) =>
 		document
 			.getElementById("view-" + x)
 			.classList.toggle("hidden", x !== v),
@@ -2148,6 +2456,7 @@ function setView(v) {
 	else if (v === "planner") renderPlanner();
 	else if (v === "finder") renderFinder();
 	else if (v === "kappa") renderKappa();
+	else if (v === "story") renderStory();
 }
 // открыть конкретный квест на странице «Все квесты» (по ?q=)
 function openQuest(id) {
@@ -2281,9 +2590,7 @@ function wireEvents() {
 			toggleAllPlan("mine", e.target.checked);
 	});
 	document.getElementById("view-all").addEventListener("change", (e) => {
-		if (progressChange(e)) return;
-		if (e.target.classList.contains("plan-all-cb"))
-			toggleAllPlan("all", e.target.checked);
+		progressChange(e);
 	});
 	document.getElementById("view-mine").addEventListener("input", (e) => {
 		if (e.target.id === "onb-input") {
@@ -2534,6 +2841,35 @@ function wireEvents() {
 		}
 	});
 
+	// сюжетные квесты — отметка подзадач (открывает следующую стадию)
+	const story = document.getElementById("view-story");
+	story.addEventListener("change", (e) => {
+		const cb = e.target.closest("input[data-story]");
+		if (!cb) return;
+		if (cb.checked) state.storyDone.add(cb.dataset.story);
+		else state.storyDone.delete(cb.dataset.story);
+		persistStory();
+		renderStory();
+	});
+	story.addEventListener("click", (e) => {
+		// «Начать главу»
+		const start = e.target.closest("[data-start]");
+		if (start) {
+			state.storyStarted.add(start.dataset.start);
+			persistStory();
+			renderStory();
+			return;
+		}
+		// выбор / смена ветки (концовки) сюжетного квеста
+		const b = e.target.closest("[data-branch]");
+		if (!b) return;
+		const [qid, bid] = b.dataset.branch.split("|");
+		if (bid) state.storyBranch[qid] = bid;
+		else delete state.storyBranch[qid];
+		persistStory();
+		renderStory();
+	});
+
 	// lightbox
 	document
 		.getElementById("lightbox")
@@ -2593,6 +2929,7 @@ async function loadData() {
 	await loadState();
 	await loadMapsGeo();
 	addGeoOnlyMaps();
+	if (view === "story" || view === "planner") await loadStoryData();
 	recomputeFailed();
 	fillFilterOptions();
 	wireEvents();

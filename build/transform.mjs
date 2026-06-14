@@ -104,7 +104,7 @@ function classify(o) {
     case 'giveItem': {
       const ids = (o.items || []).map((it) => { regItem(it); return it.id; });
       const e = { count: o.count || 1, fir: !!o.foundInRaid };
-      if (ids.length >= CATEGORY_THRESHOLD) out.handIn.push({ ...e, category: o.description || 'категория предметов', kind: 'category' });
+      if (ids.length >= CATEGORY_THRESHOLD) out.handIn.push({ ...e, category: o.description || 'категория предметов', items: ids, kind: 'category' });
       else if (ids.length > 1) out.handIn.push({ ...e, anyOf: ids, kind: 'handin' });
       else if (ids.length === 1) out.handIn.push({ ...e, item: ids[0], kind: 'handin' });
       break;
