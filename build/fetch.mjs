@@ -12,6 +12,7 @@ const QUERY = `{
   tasks(lang: ru) {
     id name normalizedName experience minPlayerLevel
     kappaRequired lightkeeperRequired factionName restartable
+    requiredPrestige { prestigeLevel }
     wikiLink taskImageLink
     trader { id name }
     map { id name }

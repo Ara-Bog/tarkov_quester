@@ -378,8 +378,29 @@ function statusOf(t) {
 	return "locked";
 }
 
+// одноимённые квесты (напр. «Новое начало» ×4 — престиж 0/1/2/3, «Обновка» — BEAR/USEC)
+// делаем различимыми: дописываем к названию престиж / фракцию / номер
+function disambiguateNames() {
+	const byName = new Map();
+	for (const t of data.tasks)
+		(byName.get(t.name) || byName.set(t.name, []).get(t.name)).push(t);
+	for (const [name, list] of byName) {
+		if (list.length < 2) continue;
+		const anyPrestige = list.some((t) => t.prestige != null);
+		const allFaction = list.every((t) => t.faction);
+		list.forEach((t, i) => {
+			let suffix;
+			if (anyPrestige) suffix = `Престиж ${t.prestige || 0}`;
+			else if (allFaction) suffix = t.faction;
+			else suffix = String(i + 1);
+			t.name = `${name} (${suffix})`;
+		});
+	}
+}
+
 // ---------- Build indices ----------------------------------------------
 function buildIndices() {
+	disambiguateNames();
 	data.tasks.forEach((t) => taskById.set(t.id, t));
 	Object.values(data.items).forEach((i) => {
 		itemById.set(i.id, i);

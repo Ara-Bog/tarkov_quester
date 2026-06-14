@@ -181,6 +181,7 @@ const outTasks = tasks.map((t) => {
     trader: regTrader(t.trader),
     faction: t.factionName && t.factionName !== 'Any' ? t.factionName : null,
     minLevel: t.minPlayerLevel || null,
+    prestige: t.requiredPrestige ? t.requiredPrestige.prestigeLevel : undefined,
     kappa: !!t.kappaRequired,
     lightkeeper: !!t.lightkeeperRequired,
     restartable: !!t.restartable,

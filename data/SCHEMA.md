@@ -22,6 +22,7 @@
   "trader": "<traderId>",          // ссылка в meta.traders
   "faction": null | "USEC" | "BEAR",
   "minLevel": 10 | null,
+  "prestige": 1,                   // (опц.) требуемый уровень престижа; есть у версий «Новое начало»
   "kappa": true,                   // нужен для контейнера Каппа
   "lightkeeper": false,            // нужен для Смотрителя
   "restartable": false,
