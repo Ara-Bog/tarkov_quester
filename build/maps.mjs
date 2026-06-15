@@ -32,7 +32,15 @@ for (const group of maps) {
       const rects = [];
       for (const e of l.extents || []) {
         const h = e.height; if (!h) continue;
-        for (const b of e.bounds || []) { if (Array.isArray(b) && b[0] && b[1]) rects.push([b[0][0], b[0][1], b[1][0], b[1][1], h[0], h[1]]); }
+        const bs = (e.bounds || []).filter((b) => Array.isArray(b) && b[0] && b[1]);
+        if (bs.length) {
+          for (const b of bs) rects.push([b[0][0], b[0][1], b[1][0], b[1][1], h[0], h[1]]);
+        } else {
+          // высота без bounds: этажи различаются ТОЛЬКО по высоте (Улицы, Завод) —
+          // покрываем весь прямоугольник карты этим диапазоном высоты.
+          const mb = m.bounds;
+          rects.push([mb[0][0], mb[0][1], mb[1][0], mb[1][1], h[0], h[1]]);
+        }
       }
       if (rects.length) extents[l.svgLayer] = rects;
     }
@@ -92,9 +100,16 @@ for (const m of md) {
 const FLOOR_ORDER = ['Ground_Level', 'Ground_Floor', 'Underground_Level', 'Basement', 'Garage', 'Bunkers', 'Tunnels', 'First_Floor', 'Second_Floor', 'Third_Floor', 'Fourth_Floor', 'Fifth_Floor'];
 const NAME_RU = { Underground: 'Подвал', Garage: 'Подвал', Basement: 'Подвал', Bunkers: 'Бункеры', Tunnels: 'Тоннели', Ground: 'Земля', '1st Floor': '1 этаж', '2nd Floor': '2 этаж', '3rd Floor': '3 этаж', '4th Floor': '4 этаж', '5th Floor': '5 этаж' };
 const fOrder = (id) => { const i = FLOOR_ORDER.indexOf(id); return i < 0 ? 99 : i; };
+// Скачиваем SVG карт локально (data/maps/<slug>.svg), чтобы карта грузилась напрямую,
+// без обращения к assets.tarkov.dev. Исходный URL сохраняем в svgRemote как фолбэк.
+const MAPS_DIR = path.join(ROOT, 'data', 'maps');
+fs.mkdirSync(MAPS_DIR, { recursive: true });
 for (const [slug, g] of Object.entries(out)) {
   try {
     const svgText = await (await fetch(g.svg)).text();
+    fs.writeFileSync(path.join(MAPS_DIR, slug + '.svg'), svgText, 'utf8');
+    g.svgRemote = g.svg;
+    g.svg = 'data/maps/' + slug + '.svg';
     const gids = new Set([...svgText.matchAll(/<g[^>]*\bid="([^"]+)"/g)].map((m) => m[1]));
     const dlayers = new Set([...svgText.matchAll(/data-layer="([^"]+)"/g)].map((m) => m[1]));
     // именованные этажи из maps.json, реально присутствующие в SVG (id группы или data-layer)
