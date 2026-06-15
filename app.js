@@ -296,6 +296,9 @@ const ui = {
 	showFindings: true, // карточка «Найти в рейде» (предметы квестов + список находок)
 	kappaSearch: "",
 	kappaHideFound: false,
+	keysQuery: "",
+	keysLoc: "", // фильтр ключей по локации ("" = все)
+	keysCollapsed: new Set(), // свёрнутые группы локаций на странице ключей
 	sort: { col: "status", dir: 1 },
 	filters: {
 		search: "",
@@ -350,6 +353,59 @@ const esc = (s) =>
 		/[&<>"]/g,
 		(c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c],
 	);
+// заглушка для картинок (когда assets.tarkov.dev недоступен): вместо исчезновения иконки —
+// аккуратный placeholder. imgPH вызывается из inline onerror, поэтому функция глобальная.
+const IMG_PH =
+	"data:image/svg+xml," +
+	encodeURIComponent(
+		"<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 48 48'>" +
+			"<rect width='48' height='48' rx='6' fill='#23262d'/>" +
+			"<rect x='1.5' y='1.5' width='45' height='45' rx='5' fill='none' stroke='#3a3f4a'/>" +
+			"<circle cx='18' cy='18' r='3.4' fill='#555c68'/>" +
+			"<path d='M11 33l8-9 5 6 4-4 9 9' fill='none' stroke='#555c68' stroke-width='2.6' stroke-linecap='round' stroke-linejoin='round'/>" +
+			"</svg>",
+	);
+function imgPH(img) {
+	if (!img || img.dataset.ph) return;
+	img.dataset.ph = "1";
+	img.src = IMG_PH;
+	img.classList.add("img-ph");
+}
+window.imgPH = imgPH;
+// Dev-переключатель: симуляция недоступности tarkov.dev — открой сайт с ?offline в URL.
+// Картинки предметов/ключей падают в заглушку imgPH, карты грузятся локально из data/maps/.
+const OFFLINE_SIM = /[?&]offline\b/.test(location.search);
+if (OFFLINE_SIM) {
+	// 1) запросы к tarkov.dev (svgRemote-фолбэк и т.п.) — отклоняем
+	const _fetch = window.fetch.bind(window);
+	window.fetch = (input, init) => {
+		const u = typeof input === "string" ? input : (input && input.url) || "";
+		if (/tarkov\.dev/.test(u))
+			return Promise.reject(new Error("offline-sim"));
+		return _fetch(input, init);
+	};
+	// 2) любые <img> с tarkov.dev — сразу в заглушку (имитируем сбой загрузки)
+	const breakImg = (img) => {
+		if (img.tagName === "IMG" && /tarkov\.dev/.test(img.src || ""))
+			imgPH(img);
+	};
+	const obs = new MutationObserver((muts) => {
+		for (const m of muts)
+			for (const n of m.addedNodes) {
+				if (n.nodeType !== 1) continue;
+				breakImg(n);
+				if (n.querySelectorAll) n.querySelectorAll("img").forEach(breakImg);
+			}
+	});
+	const start = () => {
+		document.querySelectorAll("img").forEach(breakImg);
+		obs.observe(document.body, { childList: true, subtree: true });
+		console.warn("[OFFLINE_SIM] tarkov.dev отключён: картинки → заглушка, карты → локальные");
+	};
+	if (document.body) start();
+	else document.addEventListener("DOMContentLoaded", start);
+}
+// === /ВРЕМЕННО ===
 // нормализация для поиска: нижний регистр + ё→е (чтобы е/ё считались одной буквой)
 const searchNorm = (s) => String(s).toLowerCase().replace(/ё/g, "е");
 const itemName = (id) => {
@@ -421,7 +477,7 @@ function setCookie(name, value, days) {
 function itImg(id) {
 	const ic = itemIcon(id);
 	return ic
-		? `<img src="${ic}" data-item="${id}" loading="lazy" onerror="this.style.display='none'">`
+		? `<img src="${ic}" data-item="${id}" loading="lazy" onerror="imgPH(this)">`
 		: "";
 }
 
@@ -1403,7 +1459,7 @@ function findingsRowsHtml() {
 			const ci = catItem(it.id);
 			const ic = ci.icon || ci.img;
 			const img = ic
-				? `<img src="${ic}" data-item="${it.id}" data-itemimg="${ci.img || ci.icon || ""}" onerror="this.style.display='none'">`
+				? `<img src="${ic}" data-item="${it.id}" data-itemimg="${ci.img || ci.icon || ""}" onerror="imgPH(this)">`
 				: "";
 			rows.push(
 				`<li class="${it.found ? "found" : ""}">${img}<span class="nm">${esc(ci.name)}</span><span class="cnt">×${it.qty || 1}</span><span class="fg-tag" title="Для группы «${esc(g.name)}»">${esc(g.name)}</span></li>`,
@@ -1526,7 +1582,7 @@ function findInRaidRows(mapId) {
 		const it = itemById.get(id) || {};
 		const ic = it.icon || it.img;
 		const img = ic
-			? `<img src="${ic}" data-item="${id}" data-itemimg="${it.img || it.icon || ""}" onerror="this.style.display='none'">`
+			? `<img src="${ic}" data-item="${id}" data-itemimg="${it.img || it.icon || ""}" onerror="imgPH(this)">`
 			: "";
 		const key = "i:" + id;
 		rows.push(
@@ -1642,15 +1698,22 @@ function addGeoOnlyMaps() {
 }
 // inline-SVG карты (чтобы при зуме оставалась векторно-чёткой)
 const svgCache = {};
-async function loadSvg(url) {
+async function loadSvg(url, fallback) {
 	if (url in svgCache) return svgCache[url];
+	let text = "";
 	try {
 		const r = await fetch(url, { cache: "force-cache" });
-		svgCache[url] = r.ok ? await r.text() : "";
-	} catch {
-		svgCache[url] = "";
+		if (r.ok) text = await r.text();
+	} catch {}
+	// локальная копия недоступна — пробуем исходный URL на assets.tarkov.dev
+	if (!text && fallback && fallback !== url) {
+		try {
+			const r = await fetch(fallback, { cache: "force-cache" });
+			if (r.ok) text = await r.text();
+		} catch {}
 	}
-	return svgCache[url];
+	svgCache[url] = text;
+	return text;
 }
 // игровые координаты {x,z} -> доля {left,top} на SVG-карте (формула из getCRS tarkov.dev)
 function geoFrac(x, z, g) {
@@ -2168,7 +2231,7 @@ function initMap() {
 		ready();
 	} else if (url) {
 		holder.innerHTML = '<div class="map-loading">загрузка карты…</div>';
-		loadSvg(url).then((t) => {
+		loadSvg(url, geo.svgRemote).then((t) => {
 			if (document.getElementById("map-svg") === holder) {
 				holder.innerHTML =
 					t || '<div class="map-loading">карта недоступна</div>';
@@ -2485,7 +2548,7 @@ function groupItemsHtml(g) {
 			const ci = catItem(it.id);
 			const ic = ci.icon || ci.img;
 			const img = ic
-				? `<img src="${ic}" data-item="${it.id}" data-itemimg="${ci.img || ci.icon || ""}" onerror="this.style.display='none'">`
+				? `<img src="${ic}" data-item="${it.id}" data-itemimg="${ci.img || ci.icon || ""}" onerror="imgPH(this)">`
 				: "";
 			return `<li class="${it.found ? "found" : ""}">
       <input type="checkbox" data-found="${it.id}" data-group="${g.id}" ${it.found ? "checked" : ""} title="Отметить найденным">
@@ -2567,7 +2630,7 @@ function kappaGridHtml(items) {
 		.map((i) => {
 			const ic = itemIcon(i.item);
 			const img = ic
-				? `<img src="${ic}" data-item="${i.item}" onerror="this.style.display='none'">`
+				? `<img src="${ic}" data-item="${i.item}" onerror="imgPH(this)">`
 				: "";
 			return `<label class="kappa-item ${i.done >= i.total ? "got" : ""}" title="${esc(itemName(i.item))}">
       <input type="checkbox" data-objchk="${i.objId}" data-total="${i.total}" ${i.done >= i.total ? "checked" : ""}>
@@ -2615,6 +2678,132 @@ function closeLightbox() {
 	document.getElementById("lb-img").src = "";
 }
 
+// ---------- Ключи по локациям (справочник) -----------------------------
+let keysData = null;
+async function loadKeys() {
+	if (keysData) return keysData;
+	try {
+		const r = await fetch("data/keys.json", { cache: "no-cache" });
+		if (r.ok) {
+			keysData = await r.json();
+			return keysData;
+		}
+	} catch {}
+	if (window.__KEYS__) {
+		keysData = window.__KEYS__;
+		return keysData;
+	}
+	try {
+		await injectScript("data/keys-data.js");
+		keysData = window.__KEYS__ || { keys: [], mapOrder: [] };
+	} catch {
+		keysData = { keys: [], mapOrder: [] };
+	}
+	return keysData;
+}
+const NO_LOC = "Без привязки к локации";
+function keyCardHtml(k) {
+	const wiki = k.wiki
+		? `<a class="obj-guide" href="${k.wiki}" target="_blank" rel="noopener">wiki ↗</a>`
+		: "";
+	const otherMaps =
+		k.maps.length > 1
+			? `<div class="key-maps">${k.maps
+					.map(
+						(mn) =>
+							`<span class="chip loc" style="border-left-color:${keyMapColor(mn)}">${esc(mn)}</span>`,
+					)
+					.join("")}</div>`
+			: "";
+	const ic = k.icon
+		? `<img class="key-ic" src="${k.icon}" alt="" data-keyimg="${esc(k.img || k.icon)}" data-keyname="${esc(k.name)}" loading="lazy" onerror="imgPH(this)">`
+		: `<span class="key-ic key-ic-none">🔑</span>`;
+	return `<div class="key-card">${ic}<div class="key-body"><div class="key-name">${esc(k.name)} ${wiki}</div><div class="key-short">${esc(k.shortName)}</div>${otherMaps}</div></div>`;
+}
+const keyMapColor = (name) => {
+	const id = mapIdByName.get(name);
+	return id ? mapColor(id) : "#666";
+};
+function renderKeys() {
+	const root = document.getElementById("view-keys");
+	if (!keysData) {
+		root.innerHTML = `<div class="planner-empty">Загрузка ключей…</div>`;
+		loadKeys().then(() => {
+			if (ui.view === "keys") renderKeys();
+		});
+		return;
+	}
+	const m = keysData.meta || {};
+	root.innerHTML = `
+		<div class="page-head"><h2>Ключи по локациям</h2><span class="ph-sub">${m.keyCount || keysData.keys.length} ключей · ${m.locatedCount || 0} с привязкой к локации</span></div>
+		<div class="keys-note">Локация ключа берётся из замков на картах (данные tarkov.dev). Ключи без замка — в конце.</div>
+		<div class="keys-search"><input type="text" id="keys-input" placeholder="Поиск ключа по названию…" value="${esc(ui.keysQuery || "")}" autocomplete="off"></div>
+		<div id="keys-body">${keysBodyHtml()}</div>`;
+}
+// строка поиска + фильтр по локации применяются к ключу
+function keysMatcher() {
+	const q = searchNorm((ui.keysQuery || "").trim());
+	return (k) => !q || searchNorm(k.name + " " + k.shortName).includes(q);
+}
+// число ключей в локации с учётом строки поиска
+function keysCountFor(mn, match) {
+	return mn === NO_LOC
+		? keysData.keys.filter((k) => !k.maps.length && match(k)).length
+		: keysData.keys.filter((k) => k.maps.includes(mn) && match(k)).length;
+}
+// панель фильтра по локации (чипы) + свернуть/развернуть всё
+function keysFilterHtml() {
+	const match = keysMatcher();
+	const hasNoLoc = keysData.keys.some((k) => !k.maps.length);
+	const locs = [...keysData.mapOrder, ...(hasNoLoc ? [NO_LOC] : [])];
+	const total = keysData.keys.filter(match).length;
+	const chip = (loc, label, color) => {
+		const n = loc ? keysCountFor(loc, match) : total;
+		const active = (ui.keysLoc || "") === loc;
+		return `<button class="kf-chip${active ? " active" : ""}"${color ? ` style="border-left-color:${color}"` : ""} data-kloc="${esc(loc)}">${esc(label)} <span class="n">${n}</span></button>`;
+	};
+	let chips = chip("", "Все", "");
+	for (const mn of keysData.mapOrder) chips += chip(mn, mn, keyMapColor(mn));
+	if (hasNoLoc) chips += chip(NO_LOC, NO_LOC, "#666");
+	// показываем «свернуть/развернуть всё» только когда видно больше одной группы
+	const shownLocs = ui.keysLoc ? [ui.keysLoc] : locs;
+	const allCollapsed = shownLocs.every((mn) => ui.keysCollapsed.has(mn));
+	const toggleAll =
+		shownLocs.length > 1
+			? `<button class="kf-all" data-kall="${allCollapsed ? "expand" : "collapse"}">${allCollapsed ? "Развернуть всё" : "Свернуть всё"}</button>`
+			: "";
+	return `<div class="keys-filter"><div class="kf-chips">${chips}</div>${toggleAll}</div>`;
+}
+// группы карточек ключей по локациям (учитывает поиск, фильтр локации и свёрнутые группы)
+function keysGroupsHtml() {
+	const match = keysMatcher();
+	const loc = ui.keysLoc || "";
+	const groupHtml = (mn, list, color) => {
+		if (!list.length) return "";
+		const collapsed = ui.keysCollapsed.has(mn);
+		return `<section class="key-group${collapsed ? " collapsed" : ""}"><h3 style="border-left-color:${color}" data-kgroup="${esc(mn)}" title="${collapsed ? "Показать" : "Скрыть"} ключи локации"><span class="kg-tw">${collapsed ? "▸" : "▾"}</span><span class="kg-name">${esc(mn)}</span> <span class="n">${list.length}</span></h3>${collapsed ? "" : `<div class="key-list">${list.map(keyCardHtml).join("")}</div>`}</section>`;
+	};
+	let out = "";
+	for (const mn of keysData.mapOrder) {
+		if (loc && loc !== mn) continue;
+		out += groupHtml(
+			mn,
+			keysData.keys.filter((k) => k.maps.includes(mn) && match(k)),
+			keyMapColor(mn),
+		);
+	}
+	if (!loc || loc === NO_LOC)
+		out += groupHtml(
+			NO_LOC,
+			keysData.keys.filter((k) => !k.maps.length && match(k)),
+			"#666",
+		);
+	return out || `<div class="empty-note">Ничего не найдено.</div>`;
+}
+function keysBodyHtml() {
+	return keysFilterHtml() + `<div class="keys-groups">${keysGroupsHtml()}</div>`;
+}
+
 // ---------- View switching ---------------------------------------------
 // держим URL-хэш в актуальном состоянии, чтобы обновление страницы не сбрасывало вкладку
 // ---------- Многостраничность (MPA): отдельные HTML на каждый раздел -----
@@ -2626,6 +2815,7 @@ const PAGE = {
 	finder: "finder.html",
 	kappa: "kappa.html",
 	story: "story.html",
+	keys: "keys.html",
 };
 // ссылка на квест (открывается на странице «Все квесты»)
 const questUrl = (id) => `all.html?q=${encodeURIComponent(id)}`;
@@ -2635,7 +2825,7 @@ function shellHtml(av) {
 	return `
   <header class="topbar">
     <a class="brand" href="index.html" title="На главную"><h1>Квестовик</h1><span class="meta" id="meta"></span></a>
-    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}</nav>
+    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}${tab("keys", "Ключи")}</nav>
   </header>
   <main class="wrap">
     <section class="addquest hidden" id="addquest"></section>
@@ -2662,6 +2852,7 @@ function shellHtml(av) {
         <li><b>План рейда</b> — отмеченные квесты, собранные по локациям: что <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>. Карты локаций с маркерами целей, выходами и спавнами боссов.</li>
         <li><b>Список находок</b> — личные списки предметов по группам с искомым количеством.</li>
         <li><b>Каппа</b> — предметы для контейнера Каппа: чек-лист с прогрессом и поиском.</li>
+        <li><b>Ключи</b> — справочник ключей, сгруппированных по локациям: какой ключ для какой карты, с поиском.</li>
       </ul>
       <h3>Зачем это нужно</h3>
       <p>Перед рейдом за минуту понятно: какие квесты можно сделать на этой локации, что для них взять, что найти и сдать и сколько ещё осталось — чтобы не таскать лишнее и не забывать цели.</p>
@@ -2676,6 +2867,7 @@ function shellHtml(av) {
     <section id="view-finder" class="hidden"></section>
     <section id="view-kappa" class="hidden"></section>
     <section id="view-story" class="hidden"></section>
+    <section id="view-keys" class="hidden"></section>
   </main>
   <div id="cookie-bar" class="hidden"><span>Сайт использует куки (а кто их не использует). Там буквально 1 запись, чтобы показать эту плашку :)</span><button id="cookie-ok" class="btn-gold">Ок</button></div>
   <div id="lightbox" class="hidden"><div class="lb-inner"><img id="lb-img" src="" alt="" /><div id="lb-name"></div></div></div>
@@ -2683,10 +2875,11 @@ function shellHtml(av) {
 }
 function setView(v) {
 	ui.view = v;
-	["home", "mine", "all", "planner", "finder", "kappa", "story"].forEach((x) =>
-		document
-			.getElementById("view-" + x)
-			.classList.toggle("hidden", x !== v),
+	["home", "mine", "all", "planner", "finder", "kappa", "story", "keys"].forEach(
+		(x) =>
+			document
+				.getElementById("view-" + x)
+				.classList.toggle("hidden", x !== v),
 	);
 	const questView = v === "mine" || v === "all";
 	document.getElementById("filters").classList.toggle("hidden", !questView);
@@ -2701,6 +2894,7 @@ function setView(v) {
 	else if (v === "finder") renderFinder();
 	else if (v === "kappa") renderKappa();
 	else if (v === "story") renderStory();
+	else if (v === "keys") renderKeys();
 }
 // открыть конкретный квест на странице «Все квесты» (по ?q=)
 function openQuest(id) {
@@ -3112,7 +3306,7 @@ function wireEvents() {
 				box.innerHTML = res
 					.map(
 						(i) =>
-							`<div class="r" data-additem="${i.id}" data-group="${s.dataset.fsearch}">${i.icon ? `<img src="${i.icon}" onerror="this.style.display='none'">` : ""}<span>${esc(i.name)}</span>${i.cat ? `<span class="cat-mini">${esc(i.cat)}</span>` : ""}</div>`,
+							`<div class="r" data-additem="${i.id}" data-group="${s.dataset.fsearch}">${i.icon ? `<img src="${i.icon}" onerror="imgPH(this)">` : ""}<span>${esc(i.name)}</span>${i.cat ? `<span class="cat-mini">${esc(i.cat)}</span>` : ""}</div>`,
 					)
 					.join("");
 			};
@@ -3176,6 +3370,56 @@ function wireEvents() {
 		const img = e.target.closest("img[data-item]");
 		if (img) {
 			openLightbox(itemImg(img.dataset.item), itemName(img.dataset.item));
+		}
+	});
+
+	// ключи по локациям — поиск + зум иконки
+	const keysView = document.getElementById("view-keys");
+	const keysBodyRefresh = () => {
+		const b = document.getElementById("keys-body");
+		if (b) b.innerHTML = keysBodyHtml();
+	};
+	keysView.addEventListener("input", (e) => {
+		if (e.target.id === "keys-input") {
+			ui.keysQuery = e.target.value;
+			keysBodyRefresh();
+		}
+	});
+	keysView.addEventListener("click", (e) => {
+		const img = e.target.closest("img[data-keyimg]");
+		if (img) {
+			openLightbox(img.dataset.keyimg, img.dataset.keyname);
+			return;
+		}
+		// фильтр по локации
+		const chip = e.target.closest("[data-kloc]");
+		if (chip) {
+			ui.keysLoc = chip.dataset.kloc;
+			keysBodyRefresh();
+			return;
+		}
+		// свернуть/развернуть все видимые группы
+		const all = e.target.closest("[data-kall]");
+		if (all) {
+			const locs = ui.keysLoc
+				? [ui.keysLoc]
+				: [
+						...keysData.mapOrder,
+						...(keysData.keys.some((k) => !k.maps.length) ? [NO_LOC] : []),
+					];
+			if (all.dataset.kall === "collapse")
+				locs.forEach((mn) => ui.keysCollapsed.add(mn));
+			else locs.forEach((mn) => ui.keysCollapsed.delete(mn));
+			keysBodyRefresh();
+			return;
+		}
+		// скрыть/показать ключи одной локации (клик по заголовку группы)
+		const head = e.target.closest("[data-kgroup]");
+		if (head) {
+			const mn = head.dataset.kgroup;
+			if (ui.keysCollapsed.has(mn)) ui.keysCollapsed.delete(mn);
+			else ui.keysCollapsed.add(mn);
+			keysBodyRefresh();
 		}
 	});
 

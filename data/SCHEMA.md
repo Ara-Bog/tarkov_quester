@@ -153,6 +153,32 @@
 Прогресс хранится в IndexedDB: `storyDone` (id выполненных подзадач), `storyStarted` (начатые главы),
 `storyBranch` (выбранная ветка по квесту).
 
+## `keys.json` — справочник ключей по локациям
+
+Генерируется `node build/keys.mjs`. Локация ключа берётся из **замков карт** (`Map.locks` API tarkov.dev) —
+надёжный источник (у предмета-ключа прямого поля локации нет). Ключи без замка (автомобильные,
+сейфовые и т.п.) идут в группу «Без привязки».
+
+`wiki` — ссылка на **русскую** вики (`/ru/wiki/`), построенная по имени ключа (как для квестов).
+`wikiLink` из API ведёт на английскую вики, поэтому не используется. Существование ru-страницы
+проверяется через MediaWiki API; если страницы нет (~12 ключей, в основном вырезанный контент) —
+ссылка ведёт на **поиск по ru-вики** (`Special:Search`), чтобы всё оставалось на русском.
+
+```jsonc
+{
+  "meta":     { "source", "lang", "keyCount", "locatedCount", "note" },
+  "mapOrder": ["Улицы Таркова", "Берег", ...],   // порядок групп (по числу ключей убыв.)
+  "keys": [
+    {
+      "id", "name", "shortName", "icon", "img",
+      "wiki",                     // русская вики (статья или Special:Search, если статьи нет)
+      "maps": ["Таможня"],        // канонические карты (ночь/21+ слиты); [] = без привязки
+      "lockTypes": ["door"]       // типы замков
+    }
+  ]
+}
+```
+
 ## `maps-geo.json` — гео-конфиг карт
 
 Генерируется `node build/maps.mjs` из `maps.json` (the-hideout/tarkov-dev) + API + SVG.
@@ -161,7 +187,8 @@
 ```jsonc
 {
   "customs": {
-    "svg": "https://assets.tarkov.dev/maps/svg/Customs.svg",
+    "svg": "data/maps/customs.svg",     // локальная копия (скачивается build/maps.mjs в data/maps/)
+    "svgRemote": "https://assets.tarkov.dev/maps/svg/Customs.svg", // фолбэк, если локальной нет
     "rotation": 0, "sx": ..., "sy": ..., "bounds": [[x1,z1],[x2,z2]],  // трансформация координат -> проценты
     "floors": ["Ground_Level", "Underground_Level", "First_Floor", "Second_Floor", "Third_Floor"], // слои SVG по порядку
     "base": ["First_Floor"],          // слои, показываемые вместе с землёй (без отдельной кнопки)
