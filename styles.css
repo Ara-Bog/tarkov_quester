@@ -711,9 +711,7 @@ details.ss.done[open] > summary.ss-head::before { content: "▾"; }
 
 /* шапка торговца */
 .rm-group { margin-bottom: 18px; }
-.rm-head { margin: 0 0 8px; padding: 8px 12px; font-size: 14px; background: var(--bg-3); border-left: 5px solid var(--gold-dim); border-radius: 0 6px 6px 0; display: flex; gap: 10px; align-items: center; cursor: pointer; user-select: none; flex-wrap: wrap; }
-.rm-head:hover { filter: brightness(1.12); }
-.rm-group.collapsed .rm-head { margin-bottom: 0; opacity: .85; }
+.rm-head { margin: 0 0 8px; padding: 8px 12px; font-size: 14px; background: var(--bg-3); border-left: 5px solid var(--gold-dim); border-radius: 0 6px 6px 0; display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
 .rm-tname { font-weight: 700; letter-spacing: .3px; }
 .rm-nums { font-size: 11.5px; color: var(--txt-mut); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
 .rm-nums b { color: var(--gold); }

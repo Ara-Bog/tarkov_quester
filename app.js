@@ -301,11 +301,10 @@ const ui = {
 	keysCollapsed: new Set(), // свёрнутые группы локаций на странице ключей
 	roadmap: {
 		mode: "traders", // traders | kappa
-		trader: "", // "" = все торговцы
+		trader: "", // выбранный торговец ("" = подставится первый подходящий)
 		search: "",
 		hideDone: false,
 		zoom: 1,
-		collapsed: new Set(), // свёрнутые торговцы на роадмапе
 	},
 	sort: { col: "status", dir: 1 },
 	filters: {
@@ -3081,17 +3080,14 @@ function rmTraderHtml(tr) {
 	if ((ui.roadmap.search || "").trim() && !all.some(rmMatch)) return "";
 	const c = rmCounts(all);
 	const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
-	const collapsed = ui.roadmap.collapsed.has(tr.id);
-	const head = `<h3 class="rm-head" data-rmgroup="${tr.id}">
-		<span class="kg-tw">${collapsed ? "▸" : "▾"}</span>
+	const head = `<h3 class="rm-head">
 		<span class="rm-tname">${esc(tr.name)}</span>
 		<span class="rm-nums"><b>${c.done}</b>/${c.total}<span class="rm-sep">·</span><span class="rm-av">доступно ${c.avail}</span><span class="rm-sep">·</span><span class="rm-lk">осталось ${c.total - c.done - c.failed}</span>${c.failed ? `<span class="rm-sep">·</span><span class="rm-fl">провалено ${c.failed}</span>` : ""}</span>
 		<span class="rm-prog"><span class="rm-prog-f" style="width:${pct}%"></span></span>
 	</h3>`;
-	if (collapsed) return `<section class="rm-group collapsed">${head}</section>`;
 	const g = rmBuild(tr.id);
 	if (!g.nodes.length)
-		return `<section class="rm-group">${head}<div class="empty-note">Все квесты этого торговца выполнены.</div></section>`;
+		return `<section class="rm-group" data-rmgroup="${tr.id}">${head}<div class="empty-note">Все квесты этого торговца выполнены.</div></section>`;
 	const z = ui.roadmap.zoom;
 	// колонка «шагов» — вне области прокрутки, чтобы не уезжала по горизонтали
 	const gut = g.rows
@@ -3110,7 +3106,7 @@ function rmTraderHtml(tr) {
 			</div>
 		</div>
 	</div>`;
-	return `<section class="rm-group">${head}${body}</section>`;
+	return `<section class="rm-group" data-rmgroup="${tr.id}">${head}${body}</section>`;
 }
 // сводка режима «Каппа»: общий прогресс + остаток по торговцам
 function rmKappaSummary() {
@@ -3292,7 +3288,7 @@ function rmHoverReset() {
 function rmHover(nodeEl) {
 	const group = nodeEl.closest(".rm-group");
 	const canvas = nodeEl.closest(".rm-canvas");
-	const tid = group && group.querySelector("[data-rmgroup]").dataset.rmgroup;
+	const tid = group && group.dataset.rmgroup;
 	const g = rmGraphs.get(tid);
 	if (!g || !canvas) return;
 	const id = nodeEl.dataset.rm;
@@ -4028,13 +4024,6 @@ function wireEvents() {
 		if (node && !e.target.closest("a")) {
 			location.href = questUrl(node.dataset.rm);
 			return;
-		}
-		const head = e.target.closest("[data-rmgroup]");
-		if (head) {
-			const id = head.dataset.rmgroup;
-			if (ui.roadmap.collapsed.has(id)) ui.roadmap.collapsed.delete(id);
-			else ui.roadmap.collapsed.add(id);
-			rmBodyRefresh();
 		}
 	});
 	rmView.addEventListener("mouseover", (e) => {
