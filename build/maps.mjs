@@ -22,7 +22,10 @@ for (const group of maps) {
       rotation: m.coordinateRotation || 0,
       sx: m.transform[0],
       sy: m.transform[2] * -1,
-      bounds: m.bounds,
+      // svgBounds = реальные углы SVG-картинки; bounds = игровая (проходимая) область.
+      // Маркеры позиционируются в % от картинки, поэтому нормируем по svgBounds, если он есть
+      // (различаются, напр., у Резерва — иначе маркеры уезжают вниз).
+      bounds: m.svgBounds || m.bounds,
       _layers: m.layers || [], // именованные этажи из maps.json (удаляется перед выводом)
     };
     // экстенты этажей: floor -> [[x1,z1,x2,z2,hmin,hmax], ...] (для привязки квест-маркеров к этажу)
@@ -53,7 +56,7 @@ if (!out['the-lab']) {
   const lab = maps.find((m) => m.normalizedName === 'the-lab');
   const lm = lab && (lab.maps || [])[0];
   if (lm && lm.transform && lm.bounds) {
-    out['the-lab'] = { svg: 'https://assets.tarkov.dev/maps/svg/Labs.svg', rotation: lm.coordinateRotation || 0, sx: lm.transform[0], sy: lm.transform[2] * -1, bounds: lm.bounds };
+    out['the-lab'] = { svg: 'https://assets.tarkov.dev/maps/svg/Labs.svg', rotation: lm.coordinateRotation || 0, sx: lm.transform[0], sy: lm.transform[2] * -1, bounds: lm.svgBounds || lm.bounds };
   }
 }
 
