@@ -798,9 +798,22 @@ function setProgress(objId, val) {
 	if (val <= 0) delete state.progress[objId];
 	else state.progress[objId] = val;
 	persistObjProgress();
-	if (ui.view === "planner") renderPlanner();
+	if (ui.view === "planner") renderPlannerKeepScroll();
 	else if (ui.view === "kappa") renderKappa();
 	else renderActiveViews();
+}
+// перерисовка плана без «прыжка» прокрутки: панель задач в полноэкранной карте
+// (.map-quests) и боковая колонка локации пересобираются, поэтому сохраняем и
+// возвращаем их scrollTop, а также прокрутку страницы
+function renderPlannerKeepScroll() {
+	const sel = "#view-planner .map-quests, #view-planner .loc-side";
+	const saved = [...document.querySelectorAll(sel)].map((el) => el.scrollTop);
+	const winY = window.scrollY;
+	renderPlanner();
+	document.querySelectorAll(sel).forEach((el, i) => {
+		if (saved[i] != null) el.scrollTop = saved[i];
+	});
+	window.scrollTo(0, winY);
 }
 // общие обработчики прогресса (степпер / чекбокс) для всех вкладок
 function progressClick(e) {
