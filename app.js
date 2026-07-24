@@ -299,6 +299,14 @@ const ui = {
 	keysQuery: "",
 	keysLoc: "", // фильтр ключей по локации ("" = все)
 	keysCollapsed: new Set(), // свёрнутые группы локаций на странице ключей
+	roadmap: {
+		mode: "traders", // traders | kappa
+		trader: "", // "" = все торговцы
+		search: "",
+		hideDone: false,
+		zoom: 1,
+		collapsed: new Set(), // свёрнутые торговцы на роадмапе
+	},
 	sort: { col: "status", dir: 1 },
 	filters: {
 		search: "",
@@ -864,6 +872,7 @@ function renderActiveViews() {
 	if (ui.view === "mine") renderQuests("mine");
 	else if (ui.view === "all") renderQuests("all");
 	else if (ui.view === "planner") renderPlanner();
+	else if (ui.view === "roadmap") rmBodyRefresh();
 }
 // ---------- Filtering & sorting ----------------------------------------
 function baseTasks(scope) {
@@ -2804,6 +2813,515 @@ function keysBodyHtml() {
 	return keysFilterHtml() + `<div class="keys-groups">${keysGroupsHtml()}</div>`;
 }
 
+// ---------- Роадмап квестов (граф-дерево по торговцам) ------------------
+// Раскладка — упрощённый Сугияма: уровень узла = длина самого длинного пути
+// зависимостей внутри торговца, порядок внутри уровня — барицентр по соседям
+// (несколько проходов сверху вниз / снизу вверх, чтобы линии меньше пересекались).
+const RM = { W: 186, H: 58, GX: 14, GY: 78, GUT: 0, PAD: 12 };
+// последний построенный граф по торговцу — нужен для подсветки связей при наведении
+const rmGraphs = new Map();
+// порядок торговцев как в игре (не алфавитный, как в API)
+const RM_TRADERS = [
+	"Прапор",
+	"Терапевт",
+	"Скупщик",
+	"Лыжник",
+	"Миротворец",
+	"Механик",
+	"Барахольщик",
+	"Егерь",
+	"Реф",
+	"Водитель БТР",
+	"Смотритель",
+];
+// есть ли у торговца квесты в текущем режиме (в «Каппе» — только каппа-квесты)
+function rmHasTasks(traderId) {
+	return data.tasks.some(
+		(t) =>
+			t.trader === traderId && (ui.roadmap.mode !== "kappa" || t.kappa),
+	);
+}
+// Роадмап всегда показывает ровно одного торговца. Возвращает выбранного,
+// подставляя первого подходящего, если выбор пуст или не подходит режиму.
+function rmCurrentTrader() {
+	const list = rmTraders().filter((tr) => rmHasTasks(tr.id));
+	const cur = list.find((tr) => tr.id === ui.roadmap.trader);
+	const tr = cur || list[0] || null;
+	if (tr && ui.roadmap.trader !== tr.id) ui.roadmap.trader = tr.id;
+	return tr;
+}
+// торговцы в игровом порядке (неизвестные — в конец, в порядке данных)
+function rmTraders() {
+	return data.traders
+		.slice()
+		.sort((a, b) => {
+			const ia = RM_TRADERS.indexOf(a.name),
+				ib = RM_TRADERS.indexOf(b.name);
+			return (
+				(ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) ||
+				a.name.localeCompare(b.name, "ru")
+			);
+		});
+}
+
+// попадает ли квест в отображаемый набор (режим + «скрыть выполненные»)
+function rmInScope(t) {
+	const r = ui.roadmap;
+	if (r.mode === "kappa" && !t.kappa) return false;
+	if (r.hideDone && statusOf(t) === "completed") return false;
+	return true;
+}
+// Граф одного торговца: узлы, рёбра (ближайшие видимые предки — сквозь скрытые
+// квесты того же торговца), уровни и координаты.
+function rmBuild(traderId) {
+	const nodes = data.tasks.filter((t) => t.trader === traderId && rmInScope(t));
+	const inSet = new Set(nodes.map((t) => t.id));
+	const parents = new Map(),
+		children = new Map(),
+		ext = new Map();
+	for (const t of nodes) {
+		parents.set(t.id, []);
+		children.set(t.id, []);
+	}
+	for (const t of nodes) {
+		const seen = new Set([t.id]);
+		const outs = [];
+		(function walk(reqs) {
+			for (const r of reqs || []) {
+				if (seen.has(r.task)) continue;
+				seen.add(r.task);
+				const p = taskById.get(r.task);
+				if (!p) continue;
+				const st = r.status || ["complete"];
+				const kind = st.includes("failed")
+					? "failed"
+					: st.includes("complete")
+						? "complete"
+						: "active";
+				if (inSet.has(p.id)) {
+					if (!parents.get(t.id).some((e) => e.id === p.id)) {
+						parents.get(t.id).push({ id: p.id, kind });
+						children.get(p.id).push(t.id);
+					}
+				} else if (p.trader === traderId) {
+					// квест того же торговца скрыт фильтром — идём сквозь него дальше вверх
+					walk(p.requires);
+				} else outs.push(p.id);
+			}
+		})(t.requires);
+		if (outs.length) ext.set(t.id, outs);
+	}
+	// уровни: длиннейший путь от корня (с защитой от циклов в данных)
+	const level = new Map(),
+		busy = new Set();
+	const lvl = (id) => {
+		if (level.has(id)) return level.get(id);
+		if (busy.has(id)) return 0;
+		busy.add(id);
+		let m = 0;
+		for (const p of parents.get(id) || []) m = Math.max(m, lvl(p.id) + 1);
+		busy.delete(id);
+		level.set(id, m);
+		return m;
+	};
+	for (const t of nodes) lvl(t.id);
+	const rows = [];
+	for (const t of nodes) {
+		const L = level.get(t.id);
+		(rows[L] || (rows[L] = [])).push(t.id);
+	}
+	for (let i = 0; i < rows.length; i++) if (!rows[i]) rows[i] = [];
+	const byName = (a, b) =>
+		taskById.get(a).name.localeCompare(taskById.get(b).name, "ru");
+	rows.forEach((r) => r.sort(byName));
+	// барицентр: несколько чередующихся проходов
+	const pos = new Map();
+	rows.forEach((r) => r.forEach((id, i) => pos.set(id, i)));
+	const sweep = (row, neigh) => {
+		const key = new Map();
+		row.forEach((id, i) => {
+			const vals = neigh(id).filter((v) => v != null);
+			key.set(
+				id,
+				vals.length ? vals.reduce((a, b) => a + b, 0) / vals.length : i,
+			);
+		});
+		row.sort((a, b) => key.get(a) - key.get(b) || byName(a, b));
+		row.forEach((id, i) => pos.set(id, i));
+	};
+	for (let it = 0; it < 6; it++) {
+		if (it % 2 === 0)
+			for (let i = 1; i < rows.length; i++)
+				sweep(rows[i], (id) =>
+					(parents.get(id) || []).map((p) => pos.get(p.id)),
+				);
+		else
+			for (let i = rows.length - 2; i >= 0; i--)
+				sweep(rows[i], (id) => (children.get(id) || []).map((c) => pos.get(c)));
+	}
+	// координаты: строки центрируются относительно самой широкой
+	const maxW = rows.reduce((m, r) => Math.max(m, r.length), 1);
+	const fullW = maxW * RM.W + (maxW - 1) * RM.GX;
+	const xy = new Map();
+	rows.forEach((row, L) => {
+		const rowW = row.length * RM.W + (row.length - 1) * RM.GX;
+		const x0 = RM.GUT + RM.PAD + (fullW - rowW) / 2;
+		row.forEach((id, i) =>
+			xy.set(id, { x: x0 + i * (RM.W + RM.GX), y: RM.PAD + L * RM.GY }),
+		);
+	});
+	const g = {
+		trader: traderId,
+		nodes,
+		rows,
+		parents,
+		children,
+		ext,
+		level,
+		xy,
+		width: RM.GUT + RM.PAD * 2 + fullW,
+		height: RM.PAD * 2 + (rows.length - 1) * RM.GY + RM.H,
+	};
+	rmGraphs.set(traderId, g);
+	return g;
+}
+// подходит ли квест под строку поиска роадмапа
+function rmMatch(t) {
+	const q = searchNorm((ui.roadmap.search || "").trim());
+	return !q || searchNorm(t.name).includes(q) || t._search.includes(q);
+}
+function rmEdgesHtml(g) {
+	let d = "";
+	for (const t of g.nodes) {
+		const c = g.xy.get(t.id);
+		for (const p of g.parents.get(t.id) || []) {
+			const a = g.xy.get(p.id);
+			const x1 = a.x + RM.W / 2,
+				y1 = a.y + RM.H,
+				x2 = c.x + RM.W / 2,
+				y2 = c.y;
+			// цвет ребра: пройдено (родитель выполнен) / альтернатива-провал / открыто / закрыто
+			const cls =
+				p.kind === "failed"
+					? "fail"
+					: state.completed.has(p.id)
+						? "done"
+						: statusOf(t) === "available"
+							? "open"
+							: "lock";
+			d += `<path class="rm-edge ${cls}" data-from="${p.id}" data-to="${t.id}" d="M${x1} ${y1} C${x1} ${y1 + 28} ${x2} ${y2 - 28} ${x2} ${y2}"/>`;
+		}
+	}
+	return `<svg class="rm-svg" width="${g.width}" height="${g.height}" viewBox="0 0 ${g.width} ${g.height}">${d}</svg>`;
+}
+function rmNodeHtml(t, g) {
+	const st = statusOf(t);
+	const p = g.xy.get(t.id);
+	const badges = [];
+	if (t.kappa)
+		badges.push(`<span class="rm-b kappa" title="Нужен для Каппы">К</span>`);
+	if (t.lightkeeper)
+		badges.push(
+			`<span class="rm-b lk" title="Нужен для Смотрителя">С</span>`,
+		);
+	const willFail = failsOnComplete.get(t.id) || [];
+	if (willFail.length)
+		badges.push(
+			`<span class="rm-b alt" title="Выполнение провалит: ${esc(willFail.map((id) => (taskById.get(id) || {}).name || id).join(", "))}">⚠</span>`,
+		);
+	const ex = g.ext.get(t.id);
+	if (ex)
+		badges.push(
+			`<span class="rm-b ext" title="Требует у других торговцев: ${esc(ex.map((id) => `${(taskById.get(id) || {}).name || id} (${traderName((taskById.get(id) || {}).trader)})`).join(", "))}">↗${ex.length}</span>`,
+		);
+	const lvlBadge =
+		t.minLevel != null ? `<span class="rm-lvl">ур.${t.minLevel}</span>` : "";
+	const cur =
+		st === "completed"
+			? ""
+			: `<button class="rm-cur" data-rmcur="${t.id}" title="Я сейчас на этом квесте (все предыдущие по ветке отметятся выполненными)">◉</button>`;
+	const faded = rmMatch(t) ? "" : " faded";
+	const mine = state.active.has(t.id) ? " mine" : "";
+	return `<div class="rm-node st-${st}${faded}${mine}" style="left:${p.x}px;top:${p.y}px" data-rm="${t.id}">
+		<a class="rm-nm" href="${questUrl(t.id)}" title="${esc(t.name)} — ${STATUS_RU[st]}">${esc(t.name)}</a>
+		<div class="rm-foot">${lvlBadge}<span class="rm-bs">${badges.join("")}</span>${cur}</div>
+	</div>`;
+}
+// счётчики по набору квестов (для шапок и сводки)
+function rmCounts(list) {
+	const c = { total: list.length, done: 0, avail: 0, failed: 0, locked: 0 };
+	for (const t of list) {
+		const s = statusOf(t);
+		if (s === "completed") c.done++;
+		else if (s === "failed") c.failed++;
+		else if (s === "available") c.avail++;
+		else c.locked++;
+	}
+	return c;
+}
+function rmTraderHtml(tr) {
+	const all = data.tasks.filter(
+		(t) => t.trader === tr.id && (ui.roadmap.mode !== "kappa" || t.kappa),
+	);
+	if (!all.length) return "";
+	// при активном поиске секции без совпадений не показываем
+	if ((ui.roadmap.search || "").trim() && !all.some(rmMatch)) return "";
+	const c = rmCounts(all);
+	const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
+	const collapsed = ui.roadmap.collapsed.has(tr.id);
+	const head = `<h3 class="rm-head" data-rmgroup="${tr.id}">
+		<span class="kg-tw">${collapsed ? "▸" : "▾"}</span>
+		<span class="rm-tname">${esc(tr.name)}</span>
+		<span class="rm-nums"><b>${c.done}</b>/${c.total}<span class="rm-sep">·</span><span class="rm-av">доступно ${c.avail}</span><span class="rm-sep">·</span><span class="rm-lk">осталось ${c.total - c.done - c.failed}</span>${c.failed ? `<span class="rm-sep">·</span><span class="rm-fl">провалено ${c.failed}</span>` : ""}</span>
+		<span class="rm-prog"><span class="rm-prog-f" style="width:${pct}%"></span></span>
+	</h3>`;
+	if (collapsed) return `<section class="rm-group collapsed">${head}</section>`;
+	const g = rmBuild(tr.id);
+	if (!g.nodes.length)
+		return `<section class="rm-group">${head}<div class="empty-note">Все квесты этого торговца выполнены.</div></section>`;
+	const z = ui.roadmap.zoom;
+	// колонка «шагов» — вне области прокрутки, чтобы не уезжала по горизонтали
+	const gut = g.rows
+		.map(
+			(r, i) =>
+				`<div class="rm-gut" style="top:${Math.round((RM.PAD + i * RM.GY + RM.H / 2 - 9) * z)}px">${i + 1}</div>`,
+		)
+		.join("");
+	const body = `<div class="rm-body">
+		<div class="rm-gutcol" style="height:${Math.round(g.height * z)}px">${gut}</div>
+		<div class="rm-scroll" data-rmscroll="${tr.id}">
+			<div class="rm-stage" style="width:${Math.round(g.width * z)}px;height:${Math.round(g.height * z)}px">
+				<div class="rm-canvas" style="width:${g.width}px;height:${g.height}px;transform:scale(${z})">
+					${rmEdgesHtml(g)}${g.nodes.map((t) => rmNodeHtml(t, g)).join("")}
+				</div>
+			</div>
+		</div>
+	</div>`;
+	return `<section class="rm-group">${head}${body}</section>`;
+}
+// сводка режима «Каппа»: общий прогресс + остаток по торговцам
+function rmKappaSummary() {
+	const list = data.tasks.filter((t) => t.kappa);
+	const c = rmCounts(list);
+	const pct = c.total ? Math.round((c.done / c.total) * 100) : 0;
+	const chips = rmTraders()
+		.map((tr) => {
+			const l = list.filter((t) => t.trader === tr.id);
+			if (!l.length) return "";
+			const cc = rmCounts(l);
+			const left = cc.total - cc.done;
+			return `<button class="rm-chip${ui.roadmap.trader === tr.id ? " active" : ""}${left ? "" : " done"}" data-rmtrader="${tr.id}">${esc(tr.name)} <span class="n">${cc.done}/${cc.total}</span></button>`;
+		})
+		.join("");
+	const warn = c.failed
+		? `<div class="rm-warn">⚠ Провалено каппа-квестов: <b>${c.failed}</b> — Каппа в этом заходе недостижима (нужен вайп или престиж).</div>`
+		: "";
+	return `<div class="rm-sum">
+		<div class="rm-sum-top">
+			<span class="rm-sum-t">До Каппы</span>
+			<span class="rm-prog big"><span class="rm-prog-f" style="width:${pct}%"></span></span>
+			<b>${c.done} / ${c.total}</b> <span class="muted">(${pct}%)</span>
+			<span class="rm-sep">·</span><span class="rm-av">доступно сейчас: <b>${c.avail}</b></span>
+			<span class="rm-sep">·</span><span class="rm-lk">осталось <b>${c.total - c.done}</b></span>
+		</div>
+		${warn}
+		<div class="rm-chips">${chips}</div>
+	</div>`;
+}
+// подсказка, если искомый квест есть у других торговцев (показываем только одного за раз)
+function rmSearchHint(curId) {
+	if (!(ui.roadmap.search || "").trim()) return "";
+	const others = rmTraders().filter(
+		(tr) =>
+			tr.id !== curId &&
+			data.tasks.some(
+				(t) =>
+					t.trader === tr.id &&
+					(ui.roadmap.mode !== "kappa" || t.kappa) &&
+					rmMatch(t),
+			),
+	);
+	if (!others.length) return "";
+	return `<div class="rm-hint">Ещё найдено у: ${others
+		.map(
+			(tr) =>
+				`<button class="rm-chip" data-rmtrader="${tr.id}">${esc(tr.name)}</button>`,
+		)
+		.join("")}</div>`;
+}
+function rmBodyHtml() {
+	const r = ui.roadmap;
+	const tr = rmCurrentTrader();
+	if (!tr) return `<div class="empty-note">Нет квестов для показа.</div>`;
+	const sec =
+		rmTraderHtml(tr) ||
+		`<div class="empty-note">У этого торговца ничего не найдено.</div>`;
+	return (
+		(r.mode === "kappa" ? rmKappaSummary() : "") + sec + rmSearchHint(tr.id)
+	);
+}
+function renderRoadmap() {
+	const r = ui.roadmap;
+	const root = document.getElementById("view-roadmap");
+	rmHoverReset();
+	// сохраняем горизонтальную прокрутку графов, чтобы перерисовка не сбрасывала вид
+	const scrolls = new Map();
+	root.querySelectorAll("[data-rmscroll]").forEach((el) => {
+		if (el.scrollLeft) scrolls.set(el.dataset.rmscroll, el.scrollLeft);
+	});
+	const cur = rmCurrentTrader();
+	const opts = rmTraders()
+		.filter((tr) => rmHasTasks(tr.id))
+		.map(
+			(tr) =>
+				`<option value="${tr.id}"${cur && cur.id === tr.id ? " selected" : ""}>${esc(tr.name)}</option>`,
+		)
+		.join("");
+	root.innerHTML = `
+		<div class="page-head"><h2>Роадмап квестов</h2><span class="ph-sub">${r.mode === "kappa" ? "только квесты, нужные для контейнера Каппа" : "дерево веток по торговцам: что уже пройдено и что предстоит"}</span></div>
+		<div class="rm-bar">
+			<div class="rm-modes">
+				<button class="rm-mode${r.mode === "traders" ? " active" : ""}" data-rmmode="traders">По торговцам</button>
+				<button class="rm-mode${r.mode === "kappa" ? " active" : ""}" data-rmmode="kappa">Каппа</button>
+			</div>
+			<select id="rm-trader" title="Торговец">${opts}</select>
+			<input type="text" id="rm-search" placeholder="Найти квест…" value="${esc(r.search || "")}" autocomplete="off">
+			<label class="chk"><input type="checkbox" id="rm-hidedone" ${r.hideDone ? "checked" : ""}> Скрыть выполненные</label>
+			<div class="rm-zoom">
+				<button data-rmzoom="-" title="Отдалить">−</button>
+				<span class="rm-z">${Math.round(r.zoom * 100)}%</span>
+				<button data-rmzoom="+" title="Приблизить">+</button>
+			</div>
+		</div>
+		<div class="rm-legend">
+			<span class="rm-lg st-completed">выполнен</span>
+			<span class="rm-lg st-available">доступен</span>
+			<span class="rm-lg st-locked">закрыт</span>
+			<span class="rm-lg st-failed">провален</span>
+			<span class="rm-lg-sep"></span>
+			<span class="rm-lg-b"><i class="rm-b kappa">К</i> для Каппы</span>
+			<span class="rm-lg-b"><i class="rm-b lk">С</i> для Смотрителя</span>
+			<span class="rm-lg-b"><i class="rm-b alt">⚠</i> провалит альтернативу</span>
+			<span class="rm-lg-b"><i class="rm-b ext">↗</i> требует квест другого торговца</span>
+			<span class="rm-lg-b"><i class="rm-b">◉</i> сделать текущим</span>
+		</div>
+		<div id="rm-body">${rmBodyHtml()}</div>`;
+	root.querySelectorAll("[data-rmscroll]").forEach((el) => {
+		const v = scrolls.get(el.dataset.rmscroll);
+		if (v) el.scrollLeft = v;
+		else {
+			// по умолчанию центрируем широкий граф
+			el.scrollLeft = Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
+		}
+	});
+}
+// перерисовать только тело (фильтры/зум) — без пересоздания панели управления
+function rmBodyRefresh() {
+	const b = document.getElementById("rm-body");
+	if (!b) return;
+	rmHoverReset();
+	const scrolls = new Map();
+	b.querySelectorAll("[data-rmscroll]").forEach((el) => {
+		if (el.scrollLeft) scrolls.set(el.dataset.rmscroll, el.scrollLeft);
+	});
+	b.innerHTML = rmBodyHtml();
+	b.querySelectorAll("[data-rmscroll]").forEach((el) => {
+		const v = scrolls.get(el.dataset.rmscroll);
+		el.scrollLeft = v || Math.max(0, (el.scrollWidth - el.clientWidth) / 2);
+	});
+}
+// Подсветка при наведении: предки (откуда открылся) и прямые потомки (что откроет).
+// Затухание включается не сразу, а с задержкой — иначе при быстром движении мышью
+// поверх узлов интерфейс мигает. Снятие тоже отложено, чтобы переход между
+// соседними узлами не давал вспышки.
+const RM_HOVER_ON = 260,
+	RM_HOVER_OFF = 160;
+let rmHoverOn = null,
+	rmHoverOff_ = null,
+	rmPanning = false,
+	rmDragged = false; // мышь протащили — клик не должен открывать квест
+function rmHoverSchedule(nodeEl) {
+	clearTimeout(rmHoverOff_);
+	rmHoverOff_ = null;
+	if (rmPanning) return;
+	const canvas = nodeEl.closest(".rm-canvas");
+	// если затухание уже включено — переключаем подсветку сразу, без мигания
+	if (canvas && canvas.classList.contains("hovering")) {
+		clearTimeout(rmHoverOn);
+		rmHoverOn = null;
+		rmHover(nodeEl);
+		return;
+	}
+	clearTimeout(rmHoverOn);
+	rmHoverOn = setTimeout(() => {
+		rmHoverOn = null;
+		if (!rmPanning && nodeEl.isConnected) rmHover(nodeEl);
+	}, RM_HOVER_ON);
+}
+function rmHoverUnschedule(canvas) {
+	clearTimeout(rmHoverOn);
+	rmHoverOn = null;
+	clearTimeout(rmHoverOff_);
+	rmHoverOff_ = setTimeout(() => {
+		rmHoverOff_ = null;
+		rmHoverOff(canvas);
+	}, RM_HOVER_OFF);
+}
+// немедленно снять подсветку со всех графов (перерисовка, начало перетаскивания)
+function rmHoverReset() {
+	clearTimeout(rmHoverOn);
+	clearTimeout(rmHoverOff_);
+	rmHoverOn = rmHoverOff_ = null;
+	document
+		.querySelectorAll("#view-roadmap .rm-canvas.hovering")
+		.forEach(rmHoverOff);
+}
+function rmHover(nodeEl) {
+	const group = nodeEl.closest(".rm-group");
+	const canvas = nodeEl.closest(".rm-canvas");
+	const tid = group && group.querySelector("[data-rmgroup]").dataset.rmgroup;
+	const g = rmGraphs.get(tid);
+	if (!g || !canvas) return;
+	const id = nodeEl.dataset.rm;
+	const rel = new Set([id]);
+	const up = [id];
+	while (up.length) {
+		const cur = up.pop();
+		for (const p of g.parents.get(cur) || [])
+			if (!rel.has(p.id)) {
+				rel.add(p.id);
+				up.push(p.id);
+			}
+	}
+	for (const c of g.children.get(id) || []) rel.add(c);
+	canvas.classList.add("hovering");
+	canvas.querySelectorAll("[data-rm]").forEach((n) => {
+		n.classList.toggle("rm-on", rel.has(n.dataset.rm));
+	});
+	canvas.querySelectorAll(".rm-edge").forEach((e) => {
+		e.classList.toggle(
+			"rm-on",
+			rel.has(e.dataset.from) && rel.has(e.dataset.to),
+		);
+	});
+}
+function rmHoverOff(canvas) {
+	if (!canvas) return;
+	canvas.classList.remove("hovering");
+	canvas
+		.querySelectorAll(".rm-on")
+		.forEach((el) => el.classList.remove("rm-on"));
+}
+// держим ?mode/?trader в адресе — ссылку можно сохранить/переслать
+function rmSyncUrl() {
+	const r = ui.roadmap;
+	const p = new URLSearchParams();
+	if (r.mode !== "traders") p.set("mode", r.mode);
+	if (r.trader) p.set("trader", r.trader);
+	const qs = p.toString();
+	history.replaceState(null, "", location.pathname + (qs ? "?" + qs : ""));
+}
+
 // ---------- View switching ---------------------------------------------
 // держим URL-хэш в актуальном состоянии, чтобы обновление страницы не сбрасывало вкладку
 // ---------- Многостраничность (MPA): отдельные HTML на каждый раздел -----
@@ -2816,6 +3334,7 @@ const PAGE = {
 	kappa: "kappa.html",
 	story: "story.html",
 	keys: "keys.html",
+	roadmap: "roadmap.html",
 };
 // ссылка на квест (открывается на странице «Все квесты»)
 const questUrl = (id) => `all.html?q=${encodeURIComponent(id)}`;
@@ -2825,7 +3344,7 @@ function shellHtml(av) {
 	return `
   <header class="topbar">
     <a class="brand" href="index.html" title="На главную"><h1>Квестовик</h1><span class="meta" id="meta"></span></a>
-    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}${tab("keys", "Ключи")}</nav>
+    <nav class="tabs">${tab("mine", "Мои квесты")}${tab("roadmap", "Роадмап")}${tab("story", "Сюжетные")}${tab("planner", "План рейда")}${tab("finder", "Список находок")}${tab("kappa", "Каппа")}${tab("keys", "Ключи")}</nav>
   </header>
   <main class="wrap">
     <section class="addquest hidden" id="addquest"></section>
@@ -2848,6 +3367,7 @@ function shellHtml(av) {
       <h3>Что внутри</h3>
       <ul>
         <li><b>Мои квесты</b> — активные квесты. Сверху поле <b>«Добавить квест»</b>: найдите квест и добавьте его — все предыдущие по ветке отметятся выполненными. Дальше следующие квесты добавляются автоматически.</li>
+        <li><b>Роадмап</b> — дерево квестов по торговцам: видно ветки целиком, что уже пройдено, что доступно сейчас и что ещё предстоит. Отдельный режим — только квесты, нужные для <b>Каппы</b>, со сводкой остатка по торговцам.</li>
         <li><b>Сюжетные</b> — главы историй: большие квесты, подзадачи которых открываются постепенно по стадиям, с выбором концовки у некоторых.</li>
         <li><b>План рейда</b> — отмеченные квесты, собранные по локациям: что <i>взять с собой / заложить</i> и что <i>найти / купить и сдать</i>. Карты локаций с маркерами целей, выходами и спавнами боссов.</li>
         <li><b>Список находок</b> — личные списки предметов по группам с искомым количеством.</li>
@@ -2868,6 +3388,7 @@ function shellHtml(av) {
     <section id="view-kappa" class="hidden"></section>
     <section id="view-story" class="hidden"></section>
     <section id="view-keys" class="hidden"></section>
+    <section id="view-roadmap" class="hidden"></section>
   </main>
   <div id="cookie-bar" class="hidden"><span>Сайт использует куки (а кто их не использует). Там буквально 1 запись, чтобы показать эту плашку :)</span><button id="cookie-ok" class="btn-gold">Ок</button></div>
   <div id="lightbox" class="hidden"><div class="lb-inner"><img id="lb-img" src="" alt="" /><div id="lb-name"></div></div></div>
@@ -2875,7 +3396,17 @@ function shellHtml(av) {
 }
 function setView(v) {
 	ui.view = v;
-	["home", "mine", "all", "planner", "finder", "kappa", "story", "keys"].forEach(
+	[
+		"home",
+		"mine",
+		"all",
+		"planner",
+		"finder",
+		"kappa",
+		"story",
+		"keys",
+		"roadmap",
+	].forEach(
 		(x) =>
 			document
 				.getElementById("view-" + x)
@@ -2895,6 +3426,7 @@ function setView(v) {
 	else if (v === "kappa") renderKappa();
 	else if (v === "story") renderStory();
 	else if (v === "keys") renderKeys();
+	else if (v === "roadmap") renderRoadmap();
 }
 // открыть конкретный квест на странице «Все квесты» (по ?q=)
 function openQuest(id) {
@@ -3423,6 +3955,124 @@ function wireEvents() {
 		}
 	});
 
+	// роадмап квестов — режимы, фильтры, зум, подсветка связей
+	const rmView = document.getElementById("view-roadmap");
+	rmView.addEventListener("input", (e) => {
+		if (e.target.id === "rm-search") {
+			ui.roadmap.search = e.target.value;
+			rmBodyRefresh();
+		}
+	});
+	rmView.addEventListener("change", (e) => {
+		if (e.target.id === "rm-trader") {
+			ui.roadmap.trader = e.target.value;
+			rmBodyRefresh();
+			rmSyncUrl();
+		} else if (e.target.id === "rm-hidedone") {
+			ui.roadmap.hideDone = e.target.checked;
+			rmBodyRefresh();
+		}
+	});
+	rmView.addEventListener("click", (e) => {
+		// клик, завершивший перетаскивание, не должен ничего открывать
+		if (rmDragged) {
+			e.preventDefault();
+			e.stopPropagation();
+			return;
+		}
+		const mode = e.target.closest("[data-rmmode]");
+		if (mode) {
+			ui.roadmap.mode = mode.dataset.rmmode;
+			renderRoadmap(); // может сменить торговца, если у текущего нет каппа-квестов
+			rmSyncUrl();
+			return;
+		}
+		const chip = e.target.closest("[data-rmtrader]");
+		if (chip) {
+			ui.roadmap.trader = chip.dataset.rmtrader;
+			renderRoadmap();
+			rmSyncUrl();
+			return;
+		}
+		const zoom = e.target.closest("[data-rmzoom]");
+		if (zoom) {
+			const z = ui.roadmap.zoom + (zoom.dataset.rmzoom === "+" ? 0.1 : -0.1);
+			ui.roadmap.zoom = Math.min(1.4, Math.max(0.5, Math.round(z * 10) / 10));
+			const lbl = rmView.querySelector(".rm-z");
+			if (lbl) lbl.textContent = Math.round(ui.roadmap.zoom * 100) + "%";
+			rmBodyRefresh();
+			return;
+		}
+		const cur = e.target.closest("[data-rmcur]");
+		if (cur) {
+			e.preventDefault();
+			e.stopPropagation();
+			markAsCurrent(cur.dataset.rmcur);
+			return;
+		}
+		// клик по карточке (мимо ссылки и кнопки) — тоже открывает квест
+		const node = e.target.closest("[data-rm]");
+		if (node && !e.target.closest("a")) {
+			location.href = questUrl(node.dataset.rm);
+			return;
+		}
+		const head = e.target.closest("[data-rmgroup]");
+		if (head) {
+			const id = head.dataset.rmgroup;
+			if (ui.roadmap.collapsed.has(id)) ui.roadmap.collapsed.delete(id);
+			else ui.roadmap.collapsed.add(id);
+			rmBodyRefresh();
+		}
+	});
+	rmView.addEventListener("mouseover", (e) => {
+		const n = e.target.closest("[data-rm]");
+		if (n) rmHoverSchedule(n);
+	});
+	rmView.addEventListener("mouseout", (e) => {
+		const n = e.target.closest("[data-rm]");
+		if (n && !e.relatedTarget?.closest?.("[data-rm]"))
+			rmHoverUnschedule(n.closest(".rm-canvas"));
+	});
+
+	// перетаскивание графа мышью: по горизонтали прокручивается сам граф,
+	// по вертикали — страница (как «схватить и потянуть лист»)
+	let pan = null;
+	rmView.addEventListener("mousedown", (e) => {
+		const sc = e.target.closest(".rm-scroll");
+		if (!sc || e.button !== 0) return;
+		pan = {
+			sc,
+			x: e.clientX,
+			y: e.clientY,
+			left: sc.scrollLeft,
+			top: window.scrollY,
+		};
+		rmDragged = false;
+		e.preventDefault(); // без этого начинается выделение текста / перетаскивание ссылки
+	});
+	window.addEventListener("mousemove", (e) => {
+		if (!pan) return;
+		const dx = e.clientX - pan.x,
+			dy = e.clientY - pan.y;
+		if (!rmDragged) {
+			if (Math.abs(dx) < 4 && Math.abs(dy) < 4) return; // это ещё клик, а не перетаскивание
+			rmDragged = true;
+			rmPanning = true;
+			rmHoverReset();
+			document.body.classList.add("rm-panning");
+		}
+		pan.sc.scrollLeft = pan.left - dx;
+		window.scrollTo(0, Math.max(0, pan.top - dy));
+	});
+	window.addEventListener("mouseup", () => {
+		if (!pan) return;
+		pan = null;
+		rmPanning = false;
+		document.body.classList.remove("rm-panning");
+		// флаг снимаем после текущего click-события, чтобы перетаскивание не открывало квест
+		if (rmDragged) setTimeout(() => (rmDragged = false), 0);
+	});
+
 	// сюжетные квесты — отметка подзадач (открывает следующую стадию)
 	const story = document.getElementById("view-story");
 	story.addEventListener("change", (e) => {
@@ -3528,6 +4178,12 @@ async function loadData() {
 		document
 			.getElementById("cookie-ok")
 			.addEventListener("click", () => bar.classList.add("hidden"));
+	}
+	// под-состояние из query: роадмап (?mode / ?trader)
+	if (view === "roadmap") {
+		if (q.get("mode") === "kappa") ui.roadmap.mode = "kappa";
+		const tr = q.get("trader");
+		if (tr && data.traders.some((t) => t.id === tr)) ui.roadmap.trader = tr;
 	}
 	// под-состояние из query: планировщик (?loc / ?fs), «Все квесты» (?q)
 	if (view === "planner") {

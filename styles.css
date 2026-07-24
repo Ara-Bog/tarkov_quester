@@ -665,3 +665,120 @@ details.ss.done[open] > summary.ss-head::before { content: "▾"; }
 .fg-items li.loot-found { opacity: .55; }
 .fg-items li.loot-found .nm { text-decoration: line-through; }
 .fg-items li.loot-found .loot-step .lv { color: var(--green); }
+
+/* ---------- Роадмап квестов (граф-дерево по торговцам) ---------- */
+.rm-bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 10px 12px; margin-bottom: 10px; }
+.rm-bar select, .rm-bar input[type=text] { background: var(--bg); color: var(--txt); border: 1px solid var(--line-2); border-radius: 6px; padding: 8px 10px; font-size: 13px; outline: none; }
+.rm-bar input[type=text] { min-width: 210px; }
+.rm-bar input[type=text]:focus, .rm-bar select:focus { border-color: var(--gold-dim); }
+.rm-modes { display: flex; gap: 4px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 6px; padding: 3px; }
+.rm-mode { background: transparent; border: 0; color: var(--txt-dim); font-size: 12.5px; font-weight: 600; padding: 6px 13px; border-radius: 4px; }
+.rm-mode:hover { color: var(--txt); }
+.rm-mode.active { background: var(--bg-3); color: var(--gold); }
+.rm-zoom { display: flex; align-items: center; gap: 6px; margin-left: auto; }
+.rm-zoom button { width: 26px; height: 26px; background: var(--bg-3); border: 1px solid var(--line-2); color: var(--txt-dim); border-radius: 5px; font-size: 15px; line-height: 1; padding: 0; }
+.rm-zoom button:hover { color: var(--txt); border-color: var(--gold-dim); }
+.rm-zoom .rm-z { font-size: 11.5px; color: var(--txt-mut); min-width: 34px; text-align: center; }
+
+/* легенда */
+.rm-legend { display: flex; flex-wrap: wrap; gap: 6px 14px; align-items: center; font-size: 11.5px; color: var(--txt-mut); margin-bottom: 14px; padding: 0 2px; }
+.rm-lg { display: inline-flex; align-items: center; gap: 6px; }
+.rm-lg::before { content: ""; width: 11px; height: 11px; border-radius: 3px; border: 1px solid var(--line-2); background: var(--bg-2); }
+.rm-lg.st-completed::before { background: rgba(111,174,84,.28); border-color: var(--green); }
+.rm-lg.st-available::before { background: rgba(199,169,107,.28); border-color: var(--gold); }
+.rm-lg.st-locked::before { background: var(--bg-2); border-color: var(--line-2); }
+.rm-lg.st-failed::before { background: rgba(204,91,70,.24); border-color: var(--red); }
+.rm-lg-sep { width: 1px; height: 14px; background: var(--line); }
+.rm-lg-b { display: inline-flex; align-items: center; gap: 5px; }
+
+/* сводка режима «Каппа» */
+.rm-sum { background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 12px; margin-bottom: 14px; }
+.rm-sum-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 13px; }
+.rm-sum-t { color: var(--gold); font-weight: 700; letter-spacing: .3px; }
+.rm-sum-top b { color: var(--gold); }
+.rm-warn { margin-top: 8px; font-size: 12.5px; color: var(--red); }
+.rm-warn b { color: var(--red); }
+.rm-chips { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 10px; }
+.rm-chip { background: var(--bg); border: 1px solid var(--line); color: var(--txt-dim); border-radius: 5px; padding: 5px 10px; font-size: 12px; display: inline-flex; gap: 6px; align-items: center; }
+.rm-chip:hover { color: var(--txt); border-color: var(--line-2); }
+.rm-chip.active { background: var(--bg-3); color: var(--txt); border-color: var(--gold-dim); box-shadow: inset 0 0 0 1px var(--gold-dim); }
+.rm-chip.done { opacity: .55; }
+.rm-chip.done .n { color: var(--green); }
+.rm-chip .n { color: var(--txt-mut); font-size: 11px; font-weight: 600; }
+
+/* подсказка «квест найден у другого торговца» */
+.rm-hint { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; font-size: 12px; color: var(--txt-mut); margin-top: 10px; }
+
+/* шапка торговца */
+.rm-group { margin-bottom: 18px; }
+.rm-head { margin: 0 0 8px; padding: 8px 12px; font-size: 14px; background: var(--bg-3); border-left: 5px solid var(--gold-dim); border-radius: 0 6px 6px 0; display: flex; gap: 10px; align-items: center; cursor: pointer; user-select: none; flex-wrap: wrap; }
+.rm-head:hover { filter: brightness(1.12); }
+.rm-group.collapsed .rm-head { margin-bottom: 0; opacity: .85; }
+.rm-tname { font-weight: 700; letter-spacing: .3px; }
+.rm-nums { font-size: 11.5px; color: var(--txt-mut); font-weight: 600; display: inline-flex; gap: 6px; align-items: center; }
+.rm-nums b { color: var(--gold); }
+.rm-sep { color: var(--line-2); }
+.rm-av { color: var(--gold-dim); }
+.rm-lk { color: var(--txt-mut); }
+.rm-fl { color: var(--red); }
+.rm-prog { flex: 1; min-width: 90px; max-width: 260px; height: 6px; background: var(--bg); border: 1px solid var(--line-2); border-radius: 4px; overflow: hidden; margin-left: auto; }
+.rm-prog.big { max-width: 320px; height: 10px; margin-left: 0; }
+.rm-prog-f { display: block; height: 100%; background: linear-gradient(90deg, var(--gold-dim), var(--gold)); }
+
+/* холст графа */
+.rm-body { display: flex; align-items: stretch; gap: 4px; }
+.rm-gutcol { position: relative; width: 22px; flex: none; margin-top: 5px; }
+.rm-scroll { flex: 1; min-width: 0; overflow-x: auto; overflow-y: hidden; background: var(--bg-2); border: 1px solid var(--line); border-radius: var(--radius); padding: 4px; cursor: grab; }
+/* полосу прокрутки не показываем — граф двигают перетаскиванием мыши (или Shift+колесо) */
+.rm-scroll { scrollbar-width: none; -ms-overflow-style: none; }
+.rm-scroll::-webkit-scrollbar { width: 0; height: 0; display: none; }
+/* перетаскивание графа мышью: курсор-«рука» и никакого выделения текста */
+body.rm-panning, body.rm-panning .rm-scroll, body.rm-panning .rm-node, body.rm-panning .rm-nm { cursor: grabbing !important; }
+body.rm-panning { user-select: none; }
+.rm-stage { position: relative; }
+.rm-canvas { position: relative; transform-origin: 0 0; }
+.rm-svg { position: absolute; left: 0; top: 0; pointer-events: none; overflow: visible; }
+.rm-edge { fill: none; stroke-width: 1.6; }
+.rm-edge.done { stroke: rgba(111,174,84,.5); }
+.rm-edge.open { stroke: rgba(199,169,107,.55); }
+.rm-edge.lock { stroke: var(--line-2); }
+.rm-edge.fail { stroke: rgba(204,91,70,.6); stroke-dasharray: 5 4; }
+.rm-edge, .rm-node { transition: opacity .12s ease; }
+.rm-canvas.hovering .rm-edge { opacity: .18; }
+.rm-canvas.hovering .rm-edge.rm-on { opacity: 1; stroke-width: 2.4; }
+.rm-gut { position: absolute; left: 0; width: 22px; text-align: center; font-size: 10.5px; color: var(--txt-mut); opacity: .6; }
+
+/* узел-квест */
+.rm-node { position: absolute; width: 186px; height: 58px; box-sizing: border-box; background: var(--bg-3); border: 1px solid var(--line-2); border-left: 3px solid var(--line-2); border-radius: 6px; padding: 5px 7px 4px 8px; display: flex; flex-direction: column; justify-content: space-between; overflow: hidden; cursor: pointer; transition: box-shadow .1s, opacity .12s ease; }
+.rm-node:hover { box-shadow: 0 0 0 1px var(--gold-dim), var(--shadow); z-index: 5; }
+.rm-node .rm-nm { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 11.5px; font-weight: 600; line-height: 1.22; color: var(--txt); }
+.rm-node .rm-nm:hover { text-decoration: none; color: var(--gold); }
+.rm-foot { display: flex; align-items: center; gap: 4px; }
+.rm-lvl { font-size: 10px; color: var(--txt-mut); flex: none; }
+.rm-bs { display: flex; gap: 3px; flex-wrap: nowrap; overflow: hidden; }
+.rm-b { font-size: 9.5px; font-weight: 700; line-height: 1; padding: 2px 4px; border-radius: 3px; background: var(--bg); border: 1px solid var(--line-2); color: var(--txt-mut); font-style: normal; white-space: nowrap; cursor: help; }
+.rm-b.kappa { color: #1a1407; background: var(--gold-dim); border-color: var(--gold-dim); }
+.rm-b.lk { color: var(--blue); border-color: rgba(91,143,201,.5); }
+.rm-b.alt { color: var(--red); border-color: rgba(204,91,70,.5); }
+.rm-b.ext { color: var(--txt-dim); }
+.rm-cur { margin-left: auto; flex: none; width: 20px; height: 18px; padding: 0; background: transparent; border: 1px solid transparent; border-radius: 4px; color: var(--txt-mut); font-size: 11px; line-height: 1; opacity: 0; }
+.rm-node:hover .rm-cur { opacity: 1; }
+.rm-cur:hover { color: var(--gold); border-color: var(--gold-dim); background: var(--bg); }
+
+.rm-node.st-completed { border-color: rgba(111,174,84,.45); border-left-color: var(--green); background: rgba(111,174,84,.08); }
+.rm-node.st-completed .rm-nm { color: var(--txt-mut); text-decoration: line-through; }
+.rm-node.st-available { border-color: var(--gold-dim); border-left-color: var(--gold); background: rgba(199,169,107,.09); }
+.rm-node.st-available .rm-nm { color: var(--txt); }
+.rm-node.st-failed { border-color: rgba(204,91,70,.45); border-left-color: var(--red); background: rgba(204,91,70,.08); }
+.rm-node.st-failed .rm-nm { color: var(--txt-mut); text-decoration: line-through; }
+.rm-node.st-locked { opacity: .72; }
+.rm-node.mine { box-shadow: inset 0 0 0 1px var(--gold-dim); }
+.rm-node.faded { opacity: .16; }
+.rm-canvas.hovering .rm-node { opacity: .22; }
+.rm-canvas.hovering .rm-node.rm-on { opacity: 1; }
+.rm-canvas.hovering .rm-node.rm-on.st-locked { opacity: .9; }
+
+@media (max-width: 700px) {
+  .rm-zoom { margin-left: 0; }
+  .rm-bar input[type=text] { min-width: 140px; flex: 1; }
+}
