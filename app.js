@@ -866,6 +866,7 @@ function setProgress(objId, val) {
 	if (val <= 0) delete state.progress[objId];
 	else state.progress[objId] = val;
 	persistObjProgress();
+	qmRefresh();
 	if (ui.view === "planner") renderPlannerKeepScroll();
 	else if (ui.view === "kappa") renderKappa();
 	else renderActiveViews();
@@ -950,6 +951,7 @@ function toggleAllPlan(scope, checked) {
 	renderQuests(scope);
 }
 function renderActiveViews() {
+	qmRefresh();
 	if (ui.view === "mine") renderQuests("mine");
 	else if (ui.view === "all") renderQuests("all");
 	else if (ui.view === "planner") renderPlanner();
@@ -1278,11 +1280,11 @@ function unlockLinesHtml(t) {
 	const lines = [];
 	const ll = llReqs(t).map(
 		(u) =>
-			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}">LL${u.value}</span> у ${esc(traderName(u.trader))}`,
+			`${esc(traderName(u.trader))}: <span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}">LL${u.value}</span>`,
 	);
 	const rep = (t.unlock || [])
 		.filter((u) => u.type === "reputation")
-		.map((u) => `репутация у ${esc(traderName(u.trader))} ${esc(u.cmp)} ${u.value}`);
+		.map((u) => `${esc(traderName(u.trader))}: репутация ${esc(u.cmp)} ${u.value}`);
 	if (ll.length || rep.length)
 		lines.push(
 			`<div class="line"><b>Открывается:</b> ${[...ll, ...rep].join(", ")} <span class="muted">(свой уровень лояльности отметьте на роадмапе)</span></div>`,
@@ -3561,8 +3563,9 @@ const PAGE = {
 	keys: "keys.html",
 	roadmap: "roadmap.html",
 };
-// ссылка на квест (открывается на странице «Все квесты»)
-const questUrl = (id) => `all.html?q=${encodeURIComponent(id)}`;
+// ссылка на квест: открывает всплывающую карточку на текущей странице (#q=<id>).
+// Отдельной страницы «Все квесты» в меню нет, поэтому туда не уводим.
+const questUrl = (id) => `#q=${encodeURIComponent(id)}`;
 function shellHtml(av) {
 	const tab = (v, label) =>
 		`<a class="tab${av === v ? " active" : ""}" href="${PAGE[v]}">${label}</a>`;
@@ -3616,6 +3619,7 @@ function shellHtml(av) {
     <section id="view-roadmap" class="hidden"></section>
   </main>
   <div id="cookie-bar" class="hidden"><span>Сайт использует куки (а кто их не использует). Там буквально 1 запись, чтобы показать эту плашку :)</span><button id="cookie-ok" class="btn-gold">Ок</button></div>
+  <div id="qmodal" class="hidden"><div class="qm-box" role="dialog" aria-modal="true"></div></div>
   <div id="lightbox" class="hidden"><div class="lb-inner"><img id="lb-img" src="" alt="" /><div id="lb-name"></div></div></div>
   <div id="toast"></div>`;
 }
@@ -3653,16 +3657,97 @@ function setView(v) {
 	else if (v === "keys") renderKeys();
 	else if (v === "roadmap") renderRoadmap();
 }
-// открыть конкретный квест на странице «Все квесты» (по ?q=)
-function openQuest(id) {
-	ui.expanded.add(id);
-	renderQuests("all");
-	const el = document.querySelector(`#view-all .qrow[data-id="${id}"]`);
-	if (el) {
-		el.scrollIntoView({ behavior: "smooth", block: "center" });
-		el.style.outline = "2px solid var(--gold)";
-		setTimeout(() => (el.style.outline = ""), 1500);
-	} else toast("Квест скрыт фильтрами");
+
+// ---------- Карточка квеста (всплывающее окно по #q=<id>) ---------------
+let qmId = null;
+function qmHtml(t) {
+	const st = statusOf(t);
+	const inMine = state.active.has(t.id);
+	const sub = [esc(traderName(t.trader))];
+	if (t.minLevel) sub.push("ур. " + t.minLevel);
+	for (const u of llReqs(t))
+		sub.push(
+			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}">LL${u.value}${u.trader !== t.trader ? " " + esc(traderName(u.trader)) : ""}</span>`,
+		);
+	if (t.faction) sub.push(t.faction);
+	if (t.kappa) sub.push('<span class="star">★ Каппа</span>');
+	if (t.lightkeeper) sub.push("Смотритель");
+	const p = questProgress(t);
+	const pct =
+		p.total && dispStatus(st) === "todo"
+			? `<span class="qpct" title="Выполнено ${p.done} из ${p.total}"><span class="qpct-bar"><i style="width:${p.pct}%"></i></span><b>${p.pct}%</b></span>`
+			: "";
+	return `<div class="qm-head">
+			<div class="qm-title"><h3>${esc(t.name)}</h3><div class="qm-sub">${sub.join(" · ")}</div></div>
+			<button class="qm-x" data-qm="close" title="Закрыть (Esc)">✕</button>
+		</div>
+		<div class="qm-bar">
+			<span class="badge b-${dispStatus(st)}">${DISP_RU[dispStatus(st)]}</span>${pct}
+			<span class="qm-sp"></span>
+			<button class="btn-ghost${inMine ? " on" : ""}" data-qm="active">${inMine ? "✓ В моих квестах" : "+ В мои квесты"}</button>
+			${st === "completed" ? "" : `<button class="btn-ghost" data-qm="current" title="Все предыдущие по ветке отметятся выполненными, этот — в «Мои квесты»">◉ Я на этом квесте</button>`}
+			<button class="ico done ${st === "completed" ? "on-done" : ""}" data-qm="done" title="Выполнен">✓</button>
+			<button class="ico fail ${st === "failed" ? "on-fail" : ""}" data-qm="fail" title="Провален">✗</button>
+		</div>
+		<div class="qm-body">${questDetailHtml(t)}</div>`;
+}
+function openQuestModal(id) {
+	const t = taskById.get(id);
+	if (!t) return;
+	qmId = id;
+	const m = document.getElementById("qmodal");
+	m.querySelector(".qm-box").innerHTML = qmHtml(t);
+	m.querySelector(".qm-body").scrollTop = 0;
+	m.classList.remove("hidden");
+	document.body.classList.add("qm-open");
+}
+// перерисовать открытую карточку после изменения прогресса/статуса (без сброса прокрутки)
+function qmRefresh() {
+	if (!qmId) return;
+	const t = taskById.get(qmId);
+	const box = document.querySelector("#qmodal .qm-box");
+	if (!t || !box) return;
+	const y = box.querySelector(".qm-body")?.scrollTop || 0;
+	box.innerHTML = qmHtml(t);
+	box.querySelector(".qm-body").scrollTop = y;
+}
+function closeQuestModal() {
+	qmId = null;
+	document.getElementById("qmodal").classList.add("hidden");
+	document.body.classList.remove("qm-open");
+	// убираем #q= из адреса, не создавая запись истории и не вызывая hashchange
+	if (location.hash.startsWith("#q="))
+		history.replaceState(null, "", location.pathname + location.search);
+}
+function qmFromHash() {
+	const m = location.hash.match(/^#q=([^&]+)/);
+	if (m) openQuestModal(decodeURIComponent(m[1]));
+	else if (qmId) closeQuestModal();
+}
+function wireQuestModal() {
+	const m = document.getElementById("qmodal");
+	m.addEventListener("click", (e) => {
+		if (e.target === m) return closeQuestModal(); // клик по затемнению
+		if (progressClick(e)) return;
+		const img = e.target.closest("img[data-item]");
+		if (img) {
+			openLightbox(itemImg(img.dataset.item), itemName(img.dataset.item));
+			return;
+		}
+		const b = e.target.closest("[data-qm]");
+		if (!b) return;
+		const id = qmId,
+			act = b.dataset.qm;
+		if (act === "close") closeQuestModal();
+		else if (act === "active") toggleActive(id);
+		else if (act === "current") markAsCurrent(id);
+		else if (act === "done")
+			setStatus(id, state.completed.has(id) ? null : "completed");
+		else if (act === "fail")
+			setStatus(id, state.failed.has(id) ? null : "failed");
+	});
+	m.addEventListener("change", progressChange);
+	window.addEventListener("hashchange", qmFromHash);
 }
 
 // ---------- Events ------------------------------------------------------
@@ -4347,6 +4432,10 @@ function wireEvents() {
 			closeLightbox();
 			return;
 		}
+		if (qmId) {
+			closeQuestModal();
+			return;
+		}
 		if (ui.mapFullscreen) {
 			ui.mapFullscreen = false;
 			ui.map.z = 0;
@@ -4423,8 +4512,14 @@ async function loadData() {
 			ui.mapFullscreen = true;
 		} else if (q.get("loc")) ui.plannerTab = q.get("loc");
 	}
+	// страницы «Все квесты» в меню нет — старые ссылки all.html?q=<id> ведём в «Мои квесты»
+	if (view === "all") {
+		location.replace("mine.html" + (q.get("q") ? questUrl(q.get("q")) : ""));
+		return;
+	}
 	setView(view);
-	if (view === "all" && q.get("q")) openQuest(q.get("q"));
+	wireQuestModal();
+	qmFromHash();
 	// одноразовое сообщение после миграции данных (сброс прогресса из-за патча и т.п.)
 	if (state.notice) {
 		const el = document.getElementById("toast");

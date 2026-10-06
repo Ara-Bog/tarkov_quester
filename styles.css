@@ -802,3 +802,22 @@ body.rm-panning { user-select: none; }
 .rm-sum-sub b { color: var(--txt); }
 #toast.long.show { pointer-events: auto; }
 .so-hint { display: block; font-size: 11.5px; color: var(--txt-mut); margin-top: 2px; }
+
+/* ---- Карточка квеста (всплывающее окно по #q=<id>) ---- */
+#qmodal { position: fixed; inset: 0; z-index: 150; background: rgba(0,0,0,.62); display: flex; align-items: flex-start; justify-content: center; padding: 6vh 16px 16px; }
+#qmodal.hidden { display: none; }
+body.qm-open { overflow: hidden; }
+#qmodal .qm-box { width: min(860px, 100%); max-height: 88vh; display: flex; flex-direction: column; background: var(--bg-2); border: 1px solid var(--line-2); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+.qm-head { display: flex; gap: 12px; align-items: flex-start; padding: 14px 16px 8px; }
+.qm-title { flex: 1; min-width: 0; }
+.qm-title h3 { margin: 0 0 4px; font-size: 17px; color: var(--txt); }
+.qm-sub { font-size: 12.5px; color: var(--txt-dim); }
+.qm-sub .star { color: var(--gold); }
+.qm-x { background: transparent; border: 1px solid var(--line-2); color: var(--txt-dim); width: 30px; height: 30px; border-radius: 6px; font-size: 14px; flex: none; }
+.qm-x:hover { color: var(--txt); border-color: var(--gold-dim); }
+.qm-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 6px 16px 12px; border-bottom: 1px solid var(--line); }
+.qm-sp { flex: 1; }
+.qm-bar .btn-ghost.on { color: var(--gold); border-color: var(--gold-dim); }
+.qm-body { overflow-y: auto; }
+.qm-body .qdetail { padding: 6px 16px 16px; border-bottom: 0; }
+@media (max-width: 640px) { #qmodal { padding: 0; } #qmodal .qm-box { max-height: 100vh; height: 100%; border-radius: 0; } .qm-sp { display: none; } }
