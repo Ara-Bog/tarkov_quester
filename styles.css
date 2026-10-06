@@ -780,3 +780,25 @@ body.rm-panning { user-select: none; }
   .rm-zoom { margin-left: 0; }
   .rm-bar input[type=text] { min-width: 140px; flex: 1; }
 }
+
+/* ---- Патч 1.1: лояльность торговцев и группы заданий ---- */
+#toast.long { width: min(560px, calc(100vw - 32px)); box-sizing: border-box; white-space: normal; line-height: 1.45; cursor: pointer; }
+.ll-tag { display: inline-block; font-size: 10.5px; font-weight: 700; padding: 0 4px; border-radius: 3px; border: 1px solid rgba(91,143,201,.5); color: var(--blue); }
+.ll-tag.ok { border-color: rgba(111,174,84,.45); color: var(--green); }
+.rm-b.ll { color: var(--blue); border-color: rgba(91,143,201,.5); }
+.rm-b.ll.ok { color: var(--green); border-color: rgba(111,174,84,.45); }
+.rm-b.grp { color: var(--txt-dim); border-style: dashed; }
+.rm-edge.grp { stroke: var(--line-2); stroke-dasharray: 3 4; }
+.rm-band { position: absolute; left: 0; height: 0; border-top: 1px dashed rgba(91,143,201,.45); pointer-events: none; }
+.rm-band span { position: absolute; left: 12px; top: -8px; font-size: 10px; font-weight: 700; letter-spacing: .3px; color: var(--blue); background: var(--bg); padding: 0 6px; border-radius: 3px; }
+.rm-band.ok { border-top-color: rgba(111,174,84,.4); }
+.rm-band.ok span { color: var(--green); }
+.rm-gut-ll { position: absolute; left: 0; width: 22px; text-align: center; font-size: 8.5px; font-weight: 700; color: var(--blue); }
+.rm-llpick { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--txt-dim); }
+.rm-llpick button { width: 26px; height: 26px; padding: 0; background: var(--bg); border: 1px solid var(--line-2); color: var(--txt-dim); border-radius: 5px; font-size: 12.5px; font-weight: 700; }
+.rm-llpick button:hover { color: var(--txt); border-color: var(--gold-dim); }
+.rm-llpick button.active { background: var(--bg-3); color: var(--gold); border-color: var(--gold-dim); }
+.rm-sum-sub { margin-top: 12px; font-size: 12.5px; color: var(--txt-dim); }
+.rm-sum-sub b { color: var(--txt); }
+#toast.long.show { pointer-events: auto; }
+.so-hint { display: block; font-size: 11.5px; color: var(--txt-mut); margin-top: 2px; }

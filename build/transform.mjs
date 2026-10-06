@@ -30,6 +30,9 @@ const ACTION = {
   sellItem: 'Продать',
   repair: 'Починить',
   experience: 'Опыт',
+  dialogue: 'Поговорить',
+  globalVariable: 'Условие',
+  playerLevel: 'Уровень',
 };
 
 // ---- Map canonicalisation (merge night/21+ variants) -------------------
@@ -38,13 +41,27 @@ function canonMap(name) {
   let n = name.replace(/ /g, ' ').replace(/\s+/g, ' ').trim();
   n = n.replace(/\s*21\+$/, '');
   if (/Завод/.test(n)) n = 'Завод'; // merge day/night Factory
+  if (/^Лаборатория/.test(n)) n = 'Лаборатория'; // + «Лаборатория (Dark)»
+  if (/^Ground Zero/.test(n)) n = 'Эпицентр'; // обучающий Эпицентр
   return n;
 }
+// id карт (map_N) должны быть стабильны между пересборками: на них ссылаются фильтры и выбор
+// пользователя. Поэтому берём уже выданные id из прошлого data/quests.json, новым — следующий номер.
 const canonMaps = new Map(); // canonical name -> {id, name}
+let nextMapNo = 1;
+try {
+  const prev = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'quests.json'), 'utf8'));
+  for (const m of prev.maps || []) {
+    canonMaps.set(m.name, { id: m.id, name: m.name, unused: true });
+    nextMapNo = Math.max(nextMapNo, parseInt(m.id.replace('map_', ''), 10) + 1);
+  }
+} catch {}
 function mapId(name) {
   const c = canonMap(name);
-  if (!canonMaps.has(c)) canonMaps.set(c, { id: 'map_' + (canonMaps.size + 1), name: c });
-  return canonMaps.get(c).id;
+  if (!canonMaps.has(c)) canonMaps.set(c, { id: 'map_' + nextMapNo++, name: c });
+  const m = canonMaps.get(c);
+  delete m.unused;
+  return m.id;
 }
 
 // ---- Item registry -----------------------------------------------------
@@ -163,6 +180,28 @@ function classify(o) {
   return out;
 }
 
+// ---- Группы заданий торговцев (патч 1.1) --------------------------------
+// После переработки квесты торговца приходят группами: квест открывается, когда скрытый счётчик
+// группы (globalVariable) >= N (обычно ступени 1 / 3 / 5). Что увеличивает счётчик, tarkov.dev
+// не отдаёт, поэтому группы используются для отображения/раскладки, а не для блокировки.
+const groupsByVar = new Map(); // variableId -> {id, trader, values:Set}
+for (const t of tasks)
+  for (const o of t.otherRequirements || [])
+    if (o.type === 'globalVariable') {
+      if (!groupsByVar.has(o.variableId)) groupsByVar.set(o.variableId, { variableId: o.variableId, trader: t.trader?.id, values: new Set(), minVal: Infinity });
+      const g = groupsByVar.get(o.variableId);
+      g.values.add(o.value);
+      g.minVal = Math.min(g.minVal, o.value);
+    }
+// нумерация групп внутри торговца: стабильно по variableId (id в BSG растут со временем)
+const groupsArr = [];
+const perTrader = {};
+for (const g of [...groupsByVar.values()].sort((a, b) => a.variableId.localeCompare(b.variableId))) {
+  perTrader[g.trader] = (perTrader[g.trader] || 0) + 1;
+  g.id = 'g' + (groupsArr.length + 1);
+  groupsArr.push({ id: g.id, var: g.variableId, trader: g.trader, n: perTrader[g.trader], tiers: [...g.values].sort((a, b) => a - b) });
+}
+
 // ---- Build tasks -------------------------------------------------------
 const outTasks = tasks.map((t) => {
   const objectives = (t.objectives || []).map(classify);
@@ -173,6 +212,18 @@ const outTasks = tasks.map((t) => {
   const failedBy = (t.failConditions || [])
     .filter((f) => f.__typename === 'TaskObjectiveTaskStatus' && f.task && (f.status || []).includes('complete'))
     .map((f) => f.task.id);
+
+  // условия открытия по торговцу (после патча осени 2026 большая часть веток открывается так):
+  // level — уровень лояльности (LL), reputation — репутация
+  const unlock = (t.traderRequirements || [])
+    .filter((r) => r.trader && (r.requirementType === 'level' || r.requirementType === 'reputation'))
+    .map((r) => ({ trader: regTrader(r.trader), type: r.requirementType, cmp: r.compareMethod, value: r.value }));
+  const gv = (t.otherRequirements || []).find((o) => o.type === 'globalVariable');
+  const gate = gv ? { group: groupsByVar.get(gv.variableId).id, value: gv.value } : undefined;
+  const talkTo = (t.otherRequirements || []).filter((o) => o.type === 'dialogue').flatMap((o) => (o.traders || []).map(regTrader));
+  const neededKeys = (t.neededKeys || [])
+    .map((nk) => ({ map: nk.map ? mapId(nk.map.name) : null, keys: (nk.keys || []).map((k) => { regItem(k); return k.id; }) }))
+    .filter((nk) => nk.keys.length);
 
   return {
     id: t.id,
@@ -191,18 +242,35 @@ const outTasks = tasks.map((t) => {
     requires: (t.taskRequirements || [])
       .filter((r) => r.task)
       .map((r) => ({ task: r.task.id, status: r.status || ['complete'] })),
+    unlock: unlock.length ? unlock : undefined,
+    gate,
+    talkTo: talkTo.length ? talkTo : undefined,
+    // задержка (сек) между выполнением предыдущего квеста и появлением этого
+    delay: t.availableDelaySecondsMax ? { min: t.availableDelaySecondsMin || 0, max: t.availableDelaySecondsMax } : undefined,
+    neededKeys: neededKeys.length ? neededKeys : undefined,
     failedBy: [...new Set(failedBy)],
     objectives,
   };
 });
 
 // ---- Assemble ----------------------------------------------------------
-const mapsArr = [...canonMaps.values()].sort((a, b) => a.name.localeCompare(b.name, 'ru'));
-const tradersArr = Object.values(traders).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+const mapsArr = [...canonMaps.values()].filter((m) => !m.unused).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
+// уровни лояльности (LL -> нужный уровень игрока / репутация) — из fetch.mjs
+const traderInfo = new Map((raw.data.traders || []).map((t) => [t.id, t]));
+const tradersArr = Object.values(traders)
+  .map((t) => {
+    const info = traderInfo.get(t.id);
+    const levels = (info?.levels || [])
+      .filter((l) => l.level >= 1)
+      .map((l) => ({ ll: l.level, playerLevel: l.requiredPlayerLevel, rep: l.requiredReputation }));
+    return levels.length > 1 ? { ...t, levels } : t;
+  })
+  .sort((a, b) => a.name.localeCompare(b.name, 'ru'));
 
 const data = {
   meta: {
-    source: 'https://api.tarkov.dev/graphql',
+    source: raw.source || 'https://api.tarkov.dev/graphql',
+    fetchedAt: raw.fetchedAt || undefined,
     lang: 'ru',
     taskCount: outTasks.length,
     itemCount: Object.keys(items).length,
@@ -210,6 +278,7 @@ const data = {
   },
   maps: mapsArr,
   traders: tradersArr,
+  groups: groupsArr,
   items,
   tasks: outTasks,
 };

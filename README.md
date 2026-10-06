@@ -85,10 +85,17 @@ build/maps.mjs        — гео-конфиг карт -> data/maps-geo.json
 Нужен Node.js 18+.
 
 ```
-node build/fetch.mjs       # скачать свежие квесты с tarkov.dev
+node build/fetch.mjs       # скачать квесты с json.tarkov.dev -> build/tasks_raw.json
 node build/transform.mjs   # пересобрать data/quests.json
 node build/items.mjs       # пересобрать каталог data/items.json
 node build/maps.mjs        # пересобрать гео-конфиг data/maps-geo.json
 ```
+
+`fetch.mjs` берёт данные из статичных JSON `https://json.tarkov.dev/regular/{tasks,items,maps,traders}`
+(+ словари `*_ru`): GraphQL `api.tarkov.dev/graphql` с осени 2026 не отвечает («GraphQL server
+unavailable»), сайт tarkov.dev сам перешёл на эти JSON. Список эндпоинтов — в
+[the-hideout/tarkov-data-manager](https://github.com/the-hideout/tarkov-data-manager)
+(`src/tarkov-data-manager/data/json_api_endpoints.json`). `items.mjs`, `maps.mjs` и `keys.mjs`
+пока ходят в GraphQL и до его починки не работают (их данные меняются редко).
 
 Схема данных описана в [`data/SCHEMA.md`](data/SCHEMA.md).

@@ -17,7 +17,7 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 // Это позволяет безопасно обновлять сайт на gh-pages: у существующих пользователей
 // данные мигрируются, а не ломаются.
 const DB_VERSION = 1;
-const DATA_VERSION = 1;
+const DATA_VERSION = 2;
 const DB = (() => {
 	const NAME = "tarkov_help",
 		STORE = "kv",
@@ -241,6 +241,7 @@ const NON_TRACKABLE = new Set([
 	"experience",
 	"playerLevel",
 	"taskStatus",
+	"globalVariable", // скрытые условия («не убивать …», счётчики) — отмечать нечего
 ]);
 const trackable = (o) => !NON_TRACKABLE.has(o.type);
 const objTotal = (o) => o.count || 1;
@@ -283,6 +284,8 @@ const state = {
 	storyBranch: {}, // questId -> выбранная ветка (концовка) сюжетного квеста
 	storyStarted: new Set(), // id начатых сюжетных квестов («Начать главу»)
 	found: {}, // ключ предмета в «Найти в рейде» -> сколько найдено (чек-лист рейда)
+	traderLL: {}, // traderId -> уровень лояльности игрока (по умолчанию 1); открывает квесты с условием LL
+	notice: null, // одноразовое сообщение после миграции (напр. сброс прогресса из-за патча)
 };
 const ui = {
 	view: "mine",
@@ -455,12 +458,12 @@ const wikiLink = (name, cls = "obj-guide") =>
 		? `<a class="${cls}" href="${ruWiki(name)}" target="_blank" rel="noopener" title="Открыть квест на вики">wiki ↗</a>`
 		: "";
 
-function toast(msg) {
+function toast(msg, ms = 2200) {
 	const el = document.getElementById("toast");
 	el.textContent = msg;
 	el.classList.add("show");
 	clearTimeout(toast._t);
-	toast._t = setTimeout(() => el.classList.remove("show"), 2200);
+	toast._t = setTimeout(() => el.classList.remove("show"), ms);
 }
 
 // ---------- Cookies (для флага первого визита) -------------------------
@@ -499,7 +502,36 @@ function recomputeFailed() {
 	for (const id of state.completed) fa.delete(id);
 	failedAll = fa;
 }
+// ---- Условия открытия по торговцу (патч 1.1) ---------------------------
+// уровень лояльности игрока у торговца (задаётся пользователем на роадмапе; по умолчанию 1)
+const traderLL = (id) => state.traderLL[id] || 1;
+// нужный квесту уровень лояльности у торговца(ев): [{trader, value}]
+const llReqs = (t) =>
+	(t.unlock || []).filter((u) => u.type === "level" && u.value > 1);
+// LL квеста у его собственного торговца (1 — без условия)
+const ownLL = (t) =>
+	Math.max(1, ...llReqs(t).filter((u) => u.trader === t.trader).map((u) => u.value));
+const llMet = (t) => llReqs(t).every((u) => traderLL(u.trader) >= u.value);
+const groupById = new Map();
+// «Прапор · группа 2» — группа заданий торговца со скрытым счётчиком
+function groupName(gid) {
+	const g = groupById.get(gid);
+	return g ? `${traderName(g.trader)} · группа ${g.n}` : gid;
+}
+// номер ступени группы (1, 2, 3…) по порогу счётчика
+function gateTier(t) {
+	const g = t.gate && groupById.get(t.gate.group);
+	return g ? g.tiers.indexOf(t.gate.value) + 1 : 0;
+}
+function fmtDelay(d) {
+	const h = (s) => {
+		const v = s / 3600;
+		return v >= 1 ? `${+v.toFixed(1)} ч` : `${Math.round(s / 60)} мин`;
+	};
+	return d.min === d.max ? h(d.max) : `${h(d.min)}–${h(d.max)}`;
+}
 function reqMet(t) {
+	if (!llMet(t)) return false;
 	for (const r of t.requires || []) {
 		const st = r.status || ["complete"];
 		let ok = false;
@@ -559,6 +591,7 @@ function buildIndices() {
 		mapIdByName.set(m.name, m.id);
 	});
 	data.traders.forEach((t) => traderById.set(t.id, t));
+	(data.groups || []).forEach((g) => groupById.set(g.id, g));
 	for (const t of data.tasks) {
 		for (const r of t.requires || []) {
 			const rst = r.status || ["complete"];
@@ -613,7 +646,8 @@ async function persistFinder() {
 }
 // Миграции ФОРМАТА хранимых данных. Запускается до loadState().
 async function migrateData() {
-	let v = await DB.get("dataVersion", null);
+	const stored = await DB.get("dataVersion", null);
+	let v = stored;
 	if (v === null) {
 		// Нет версии: либо новый пользователь, либо старый (до версионирования).
 		const existing =
@@ -636,8 +670,30 @@ async function migrateData() {
 		if (changed) await DB.set("findGroups", groups);
 		v = 1;
 	}
-	// if (v < 2) { ...; v = 2; }
-	if (v !== DATA_VERSION) await DB.set("dataVersion", DATA_VERSION);
+	if (v < 2) {
+		// v1 -> v2: патч 1.1 (осень 2026) переделал квесты — сменились цели (их id), ветки и
+		// условия открытия. Старые отметки больше не соответствуют игре, поэтому прогресс по
+		// квестам, целям и план рейда сбрасываем. «Список находок» и сюжетные главы не трогаем.
+		const had = (await DB.get("completed", []))?.length || (await DB.get("active", []))?.length;
+		for (const [k, def] of [
+			["completed", []],
+			["failed", []],
+			["active", []],
+			["progress", {}],
+			["plan", []],
+			["planChoices", {}],
+			["found", {}],
+		])
+			await DB.set(k, def);
+		if (had)
+			state.notice =
+				"Квесты в игре переработаны (патч 1.1): изменились цели, ветки и условия открытия. Прогресс по квестам сброшен — отметьте текущие квесты заново (кнопка ◉ на роадмапе отмечает всю ветку). Списки находок и сюжетные главы сохранены.";
+		v = 2;
+	}
+	// if (v < 3) { ...; v = 3; }
+	// сохраняем, если версия в базе отличается (сравниваем с исходной, а не с v после миграций —
+	// иначе версия не запишется и миграции будут повторяться при каждой загрузке)
+	if (stored !== DATA_VERSION) await DB.set("dataVersion", DATA_VERSION);
 }
 async function loadState() {
 	state.completed = new Set(await DB.get("completed", []));
@@ -651,6 +707,10 @@ async function loadState() {
 	state.storyBranch = (await DB.get("storyBranch", {})) || {};
 	state.storyStarted = new Set(await DB.get("storyStarted", []));
 	state.found = (await DB.get("found", {})) || {};
+	state.traderLL = (await DB.get("traderLL", {})) || {};
+}
+async function persistTraderLL() {
+	await DB.set("traderLL", state.traderLL);
 }
 async function persistFound() {
 	await DB.set("found", state.found);
@@ -744,6 +804,15 @@ function markAsCurrent(id) {
 		state.completed.add(q);
 		state.failed.delete(q);
 	}
+	// раз квест уже взят — значит нужный ему уровень лояльности достигнут (и у предыдущих тоже)
+	let llChanged = false;
+	for (const q of [id, ...toComplete])
+		for (const u of llReqs(taskById.get(q) || {}))
+			if (traderLL(u.trader) < u.value) {
+				state.traderLL[u.trader] = u.value;
+				llChanged = true;
+			}
+	if (llChanged) persistTraderLL();
 	state.completed.delete(id);
 	state.failed.delete(id);
 	state.active.add(id);
@@ -1066,6 +1135,10 @@ function questRowHtml(t, scope) {
 			.join("") || '<span class="muted">—</span>';
 	const sub = [esc(traderName(t.trader))];
 	if (t.minLevel) sub.push("ур. " + t.minLevel);
+	for (const u of llReqs(t))
+		sub.push(
+			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}" title="Нужен ${u.value}-й уровень лояльности у торговца ${esc(traderName(u.trader))}">LL${u.value}${u.trader !== t.trader ? " " + esc(traderName(u.trader)) : ""}</span>`,
+		);
 	if (t.faction) sub.push(t.faction);
 	if (t.kappa)
 		sub.push(
@@ -1200,8 +1273,48 @@ function qLink(id) {
 	if (!t) return esc(id);
 	return `<a class="q-link cstate-${statusOf(t)}" href="${questUrl(id)}">${esc(t.name)}</a>`;
 }
-function depsHtml(t) {
+// условия открытия квеста после патча 1.1: лояльность, группа заданий, разговор, задержка
+function unlockLinesHtml(t) {
 	const lines = [];
+	const ll = llReqs(t).map(
+		(u) =>
+			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}">LL${u.value}</span> у ${esc(traderName(u.trader))}`,
+	);
+	const rep = (t.unlock || [])
+		.filter((u) => u.type === "reputation")
+		.map((u) => `репутация у ${esc(traderName(u.trader))} ${esc(u.cmp)} ${u.value}`);
+	if (ll.length || rep.length)
+		lines.push(
+			`<div class="line"><b>Открывается:</b> ${[...ll, ...rep].join(", ")} <span class="muted">(свой уровень лояльности отметьте на роадмапе)</span></div>`,
+		);
+	if (t.gate) {
+		const g = groupById.get(t.gate.group);
+		const tier = gateTier(t);
+		lines.push(
+			`<div class="line"><b>Группа заданий:</b> ${esc(groupName(t.gate.group))}${g && g.tiers.length > 1 ? `, ступень ${tier} из ${g.tiers.length}` : ""} <span class="muted" title="Скрытый счётчик игры. Растёт по мере выполнения заданий торговца; точное правило tarkov.dev не публикует.">(счётчик группы ≥ ${t.gate.value})</span></div>`,
+		);
+	}
+	if (t.talkTo)
+		lines.push(
+			`<div class="line"><b>Сначала:</b> поговорить с ${t.talkTo.map((id) => esc(traderName(id))).join(", ")}</div>`,
+		);
+	if (t.delay)
+		lines.push(
+			`<div class="line"><b>Появится</b> через ${fmtDelay(t.delay)} после выполнения предыдущего</div>`,
+		);
+	if (t.neededKeys)
+		lines.push(
+			`<div class="line"><b>Ключи:</b> ${t.neededKeys
+				.map(
+					(nk) =>
+						`${nk.keys.map((k) => `${itImg(k)}${esc(itemShort(k))}`).join(" / ")}${nk.map ? ` <span class="muted">(${esc(mapName(nk.map))})</span>` : ""}`,
+				)
+				.join("; ")}</div>`,
+		);
+	return lines;
+}
+function depsHtml(t) {
+	const lines = unlockLinesHtml(t);
 	if (t.requires && t.requires.length) {
 		const parts = t.requires.map((r) => {
 			const s = (r.status || ["complete"])
@@ -2384,7 +2497,7 @@ function storyObjHtml(o) {
 	const opt = o.optional ? ` <span class="so-optlbl">необяз.</span>` : "";
 	return `<li class="so${done ? " so-done" : ""}${o.optional ? " so-opt" : ""}">
 			<label class="so-check"><input type="checkbox" data-story="${o.id}" ${done ? "checked" : ""}><span class="so-box"></span></label>
-			<span class="so-txt"><span class="so-act">${esc(o.action)}:</span> ${esc(o.desc)}${opt}${fir} ${locs}</span>
+			<span class="so-txt"><span class="so-act">${esc(o.action)}:</span> ${esc(o.desc)}${opt}${fir} ${locs}${o.hint ? `<span class="so-hint">${esc(o.hint)}</span>` : ""}</span>
 		</li>`;
 }
 // отрисовка списка стадий; baseNum — смещение нумерации (для веток продолжаем нумерацию после общих стадий)
@@ -2923,20 +3036,65 @@ function rmBuild(traderId) {
 		})(t.requires);
 		if (outs.length) ext.set(t.id, outs);
 	}
-	// уровни: длиннейший путь от корня (с защитой от циклов в данных)
+	// группы заданий (патч 1.1): ступень N группы идёт после ближайшей видимой ступени ниже —
+	// рисуем пунктирные связи «группа», если прямой связи по требованиям нет
+	const byGroupTier = new Map(); // "gid|tier" -> [ids]
+	for (const t of nodes) {
+		const k = gateTier(t);
+		if (!k) continue;
+		const key = t.gate.group + "|" + k;
+		(byGroupTier.get(key) || byGroupTier.set(key, []).get(key)).push(t.id);
+	}
+	for (const t of nodes) {
+		const k = gateTier(t);
+		for (let lower = k - 1; lower >= 1; lower--) {
+			const prev = byGroupTier.get(t.gate.group + "|" + lower);
+			if (!prev) continue;
+			for (const pid of prev)
+				if (!parents.get(t.id).some((e) => e.id === pid)) {
+					parents.get(t.id).push({ id: pid, kind: "group" });
+					children.get(pid).push(t.id);
+				}
+			break;
+		}
+	}
+	// эффективная лояльность: своя LL или LL любого предка (ветка не может открыться раньше)
+	const effLL = new Map(),
+		busyLL = new Set();
+	const ell = (id) => {
+		if (effLL.has(id)) return effLL.get(id);
+		if (busyLL.has(id)) return 1;
+		busyLL.add(id);
+		let m = ownLL(taskById.get(id));
+		for (const p of parents.get(id) || []) m = Math.max(m, ell(p.id));
+		busyLL.delete(id);
+		effLL.set(id, m);
+		return m;
+	};
+	for (const t of nodes) ell(t.id);
+	// уровни: длиннейший путь от корня (с защитой от циклов в данных), с разбиением на полосы
+	// лояльности — квесты LL2 начинаются ниже всех квестов LL1 и т.д.
 	const level = new Map(),
-		busy = new Set();
+		busy = new Set(),
+		bandStart = new Map(); // LL -> первая строка полосы
 	const lvl = (id) => {
 		if (level.has(id)) return level.get(id);
 		if (busy.has(id)) return 0;
 		busy.add(id);
-		let m = 0;
+		let m = bandStart.get(effLL.get(id)) || 0;
 		for (const p of parents.get(id) || []) m = Math.max(m, lvl(p.id) + 1);
 		busy.delete(id);
 		level.set(id, m);
 		return m;
 	};
-	for (const t of nodes) lvl(t.id);
+	const bands = [...new Set(effLL.values())].sort((a, b) => a - b);
+	let next = 0;
+	for (const b of bands) {
+		bandStart.set(b, next);
+		for (const t of nodes) if (effLL.get(t.id) === b) lvl(t.id);
+		for (const t of nodes)
+			if (effLL.get(t.id) <= b) next = Math.max(next, level.get(t.id) + 1);
+	}
 	const rows = [];
 	for (const t of nodes) {
 		const L = level.get(t.id);
@@ -2991,6 +3149,7 @@ function rmBuild(traderId) {
 		ext,
 		level,
 		xy,
+		bandStart,
 		width: RM.GUT + RM.PAD * 2 + fullW,
 		height: RM.PAD * 2 + (rows.length - 1) * RM.GY + RM.H,
 	};
@@ -3016,7 +3175,9 @@ function rmEdgesHtml(g) {
 			const cls =
 				p.kind === "failed"
 					? "fail"
-					: state.completed.has(p.id)
+					: p.kind === "group"
+						? "grp"
+						: state.completed.has(p.id)
 						? "done"
 						: statusOf(t) === "available"
 							? "open"
@@ -3041,6 +3202,16 @@ function rmNodeHtml(t, g) {
 		badges.push(
 			`<span class="rm-b alt" title="Выполнение провалит: ${esc(willFail.map((id) => (taskById.get(id) || {}).name || id).join(", "))}">⚠</span>`,
 		);
+	for (const u of llReqs(t))
+		badges.push(
+			`<span class="rm-b ll${traderLL(u.trader) >= u.value ? " ok" : ""}" title="Нужен ${u.value}-й уровень лояльности у торговца ${esc(traderName(u.trader))}">LL${u.value}</span>`,
+		);
+	if (t.gate) {
+		const gr = groupById.get(t.gate.group);
+		badges.push(
+			`<span class="rm-b grp" title="${esc(groupName(t.gate.group))}${gr && gr.tiers.length > 1 ? `, ступень ${gateTier(t)} из ${gr.tiers.length}` : ""} — открывается по скрытому счётчику группы (≥ ${t.gate.value})">Г${gr ? gr.n : "?"}${gr && gr.tiers.length > 1 ? "·" + gateTier(t) : ""}</span>`,
+		);
+	}
 	const ex = g.ext.get(t.id);
 	if (ex)
 		badges.push(
@@ -3090,23 +3261,64 @@ function rmTraderHtml(tr) {
 		return `<section class="rm-group" data-rmgroup="${tr.id}">${head}<div class="empty-note">Все квесты этого торговца выполнены.</div></section>`;
 	const z = ui.roadmap.zoom;
 	// колонка «шагов» — вне области прокрутки, чтобы не уезжала по горизонтали
+	const bandAt = new Map([...g.bandStart].map(([ll, row]) => [row, ll]));
 	const gut = g.rows
 		.map(
 			(r, i) =>
+				(bandAt.has(i) && g.bandStart.size > 1
+					? `<div class="rm-gut-ll" style="top:${Math.round((RM.PAD + i * RM.GY - (RM.GY - RM.H) / 2) * z) - 7}px" title="Квесты ниже требуют ${bandAt.get(i)}-й уровень лояльности">LL${bandAt.get(i)}</div>`
+					: "") +
 				`<div class="rm-gut" style="top:${Math.round((RM.PAD + i * RM.GY + RM.H / 2 - 9) * z)}px">${i + 1}</div>`,
 		)
 		.join("");
+	// горизонтальные разделители полос лояльности
+	const bandLines =
+		g.bandStart.size > 1
+			? [...g.bandStart]
+					.filter(([, row]) => row > 0)
+					.map(
+						([ll, row]) =>
+							`<div class="rm-band${traderLL(g.trader) >= ll ? " ok" : ""}" style="top:${RM.PAD + row * RM.GY - (RM.GY - RM.H) / 2}px;width:${g.width}px"><span>Лояльность ${ll}${traderLL(g.trader) >= ll ? " ✓" : ""}</span></div>`,
+					)
+					.join("")
+			: "";
 	const body = `<div class="rm-body">
 		<div class="rm-gutcol" style="height:${Math.round(g.height * z)}px">${gut}</div>
 		<div class="rm-scroll" data-rmscroll="${tr.id}">
 			<div class="rm-stage" style="width:${Math.round(g.width * z)}px;height:${Math.round(g.height * z)}px">
 				<div class="rm-canvas" style="width:${g.width}px;height:${g.height}px;transform:scale(${z})">
-					${rmEdgesHtml(g)}${g.nodes.map((t) => rmNodeHtml(t, g)).join("")}
+					${bandLines}${rmEdgesHtml(g)}${g.nodes.map((t) => rmNodeHtml(t, g)).join("")}
 				</div>
 			</div>
 		</div>
 	</div>`;
 	return `<section class="rm-group" data-rmgroup="${tr.id}">${head}${body}</section>`;
+}
+// «Моя лояльность» у выбранного торговца: от неё зависит, какие квесты LL2–4 открыты
+function rmLLPickerHtml(tr) {
+	const info = tr && traderById.get(tr.id);
+	if (!info || !info.levels || info.levels.length < 2) return "";
+	const cur = traderLL(tr.id);
+	const btns = info.levels
+		.map(
+			(l) =>
+				`<button class="${l.ll === cur ? "active" : ""}" data-rmll="${l.ll}" title="${l.ll === 1 ? "LL1 — стартовый уровень" : `LL${l.ll}: уровень персонажа ${l.playerLevel}+, репутация ${l.rep}+`}">${l.ll}</button>`,
+		)
+		.join("");
+	return `<div class="rm-llpick" title="Ваш уровень лояльности у торговца — открывает квесты с условием LL">Моя лояльность: ${btns}</div>`;
+}
+// Коллекционер после патча 1.1: кроме квестов нужен LL4 у торговцев (+ репутация у Скупщика)
+function rmCollectorReqsHtml() {
+	if (!collectorTask || !collectorTask.unlock) return "";
+	const parts = collectorTask.unlock.map((u) => {
+		if (u.type === "level") {
+			const ok = traderLL(u.trader) >= u.value;
+			return `<button class="rm-chip${ok ? " done" : ""}" data-rmllset="${u.trader}:${ok ? u.value - 1 : u.value}" title="${ok ? "Отмечено. Нажмите, чтобы снять" : `Отметить: у меня LL${u.value}`}">${ok ? "✓ " : ""}${esc(traderName(u.trader))} LL${u.value}</button>`;
+		}
+		return `<span class="rm-chip" title="Отслеживается в игре">${esc(traderName(u.trader))}: репутация ${esc(u.cmp)} ${u.value}</span>`;
+	});
+	const lvl = collectorTask.minLevel ? `, уровень персонажа ${collectorTask.minLevel}+` : "";
+	return `<div class="rm-sum-sub"><b>Для «Коллекционера» также нужно</b>${lvl}:</div><div class="rm-chips">${parts.join("")}</div>`;
 }
 // сводка режима «Каппа»: общий прогресс + остаток по торговцам
 function rmKappaSummary() {
@@ -3135,6 +3347,7 @@ function rmKappaSummary() {
 		</div>
 		${warn}
 		<div class="rm-chips">${chips}</div>
+		${rmCollectorReqsHtml()}
 	</div>`;
 }
 // подсказка, если искомый квест есть у других торговцев (показываем только одного за раз)
@@ -3194,6 +3407,7 @@ function renderRoadmap() {
 				<button class="rm-mode${r.mode === "kappa" ? " active" : ""}" data-rmmode="kappa">Каппа</button>
 			</div>
 			<select id="rm-trader" title="Торговец">${opts}</select>
+			${rmLLPickerHtml(cur)}
 			<input type="text" id="rm-search" placeholder="Найти квест…" value="${esc(r.search || "")}" autocomplete="off">
 			<label class="chk"><input type="checkbox" id="rm-hidedone" ${r.hideDone ? "checked" : ""}> Скрыть выполненные</label>
 			<div class="rm-zoom">
@@ -3212,6 +3426,8 @@ function renderRoadmap() {
 			<span class="rm-lg-b"><i class="rm-b lk">С</i> для Смотрителя</span>
 			<span class="rm-lg-b"><i class="rm-b alt">⚠</i> провалит альтернативу</span>
 			<span class="rm-lg-b"><i class="rm-b ext">↗</i> требует квест другого торговца</span>
+			<span class="rm-lg-b"><i class="rm-b ll">LL2</i> нужен уровень лояльности</span>
+			<span class="rm-lg-b"><i class="rm-b grp">Г1·2</i> группа заданий · ступень</span>
 			<span class="rm-lg-b"><i class="rm-b">◉</i> сделать текущим</span>
 		</div>
 		<div id="rm-body">${rmBodyHtml()}</div>`;
@@ -3996,6 +4212,19 @@ function wireEvents() {
 			rmSyncUrl();
 			return;
 		}
+		// уровень лояльности: кнопки «Моя лояльность» (текущий торговец) и чипы LL4 Коллекционера
+		const llBtn = e.target.closest("[data-rmll], [data-rmllset]");
+		if (llBtn) {
+			const [trId, v] = llBtn.dataset.rmllset
+				? llBtn.dataset.rmllset.split(":")
+				: [ui.roadmap.trader, llBtn.dataset.rmll];
+			if (+v > 1) state.traderLL[trId] = +v;
+			else delete state.traderLL[trId];
+			persistTraderLL();
+			renderRoadmap();
+			renderStats();
+			return;
+		}
 		const chip = e.target.closest("[data-rmtrader]");
 		if (chip) {
 			ui.roadmap.trader = chip.dataset.rmtrader;
@@ -4196,4 +4425,12 @@ async function loadData() {
 	}
 	setView(view);
 	if (view === "all" && q.get("q")) openQuest(q.get("q"));
+	// одноразовое сообщение после миграции данных (сброс прогресса из-за патча и т.п.)
+	if (state.notice) {
+		const el = document.getElementById("toast");
+		el.classList.add("long");
+		el.addEventListener("click", () => el.classList.remove("show"), { once: true });
+		toast(state.notice, 20000);
+		state.notice = null;
+	}
 })();
