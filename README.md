@@ -86,6 +86,7 @@ build/maps.mjs        — гео-конфиг карт -> data/maps-geo.json
 
 ```
 node build/fetch.mjs       # скачать квесты с json.tarkov.dev -> build/tasks_raw.json
+node build/wiki.mjs        # квесты, которых нет в tarkov.dev, с ру-вики -> build/wiki_raw.json
 node build/transform.mjs   # пересобрать data/quests.json
 node build/items.mjs       # пересобрать каталог data/items.json
 node build/maps.mjs        # пересобрать гео-конфиг data/maps-geo.json
@@ -97,5 +98,11 @@ unavailable»), сайт tarkov.dev сам перешёл на эти JSON. Сп
 [the-hideout/tarkov-data-manager](https://github.com/the-hideout/tarkov-data-manager)
 (`src/tarkov-data-manager/data/json_api_endpoints.json`). `items.mjs`, `maps.mjs` и `keys.mjs`
 пока ходят в GraphQL и до его починки не работают (их данные меняются редко).
+
+`wiki.mjs` дополняет данные квестами с [русской вики Escape from Tarkov](https://escapefromtarkov.fandom.com/ru/)
+(лицензия CC BY-SA 3.0): tarkov.dev не отдаёт квесты, которые игра помечает сюжетными/скрытыми,
+ивентовые и сезонные (KORD BREACH). Сопоставление — по полю `node` инфобокса (BSG id). У таких
+квестов `source: "wiki"`, цели — текстом. Квесты, пропавшие из выгрузки tarkov.dev, `transform.mjs`
+переносит из прошлой сборки с пометкой `stale`.
 
 Схема данных описана в [`data/SCHEMA.md`](data/SCHEMA.md).

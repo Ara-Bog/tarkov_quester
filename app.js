@@ -535,7 +535,14 @@ function fmtDelay(d) {
 }
 function reqMet(t) {
 	if (!llMet(t)) return false;
-	for (const r of t.requires || []) {
+	const reqs = t.requires || [];
+	// requiresAny — достаточно любого из предыдущих («A или B», квесты с вики)
+	if (t.requiresAny && reqs.length)
+		return reqs.some((r) => reqOk(r));
+	return reqs.every((r) => reqOk(r));
+}
+function reqOk(r) {
+	{
 		const st = r.status || ["complete"];
 		let ok = false;
 		// complete — предыдущий квест выполнен
@@ -548,9 +555,8 @@ function reqMet(t) {
 			ok = true;
 		// failed — предыдущий квест должен быть провален (ветка-альтернатива)
 		if (st.includes("failed") && failedAll.has(r.task)) ok = true;
-		if (!ok) return false;
+		return ok;
 	}
-	return true;
 }
 function statusOf(t) {
 	if (state.completed.has(t.id)) return "completed";
@@ -794,6 +800,8 @@ function markAsCurrent(id) {
 	(function collect(qid) {
 		const t = taskById.get(qid);
 		if (!t) return;
+		// «A или B» — неизвестно, какой путь пройден, предыдущие не достраиваем
+		if (t.requiresAny) return;
 		for (const r of t.requires || []) {
 			// идём только по основной ветке; failed-ветки не достраиваем — это альтернативы
 			const st = r.status || ["complete"];
@@ -1167,6 +1175,12 @@ function questRowHtml(t, scope) {
 		sub.push(
 			`<span class="stale-tag" title="Нет в свежих данных tarkov.dev (с ${esc(t.stale)})">⚠ устар.</span>`,
 		);
+	if (t.event)
+		sub.push(`<span class="event-tag" title="${esc(t.event)}">ивент</span>`);
+	if (t.source === "wiki")
+		sub.push(
+			`<span class="wiki-tag" title="Квеста нет на tarkov.dev — данные с вики (цели текстом)">вики</span>`,
+		);
 	for (const u of llReqs(t))
 		sub.push(
 			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}" title="Нужен ${u.value}-й уровень лояльности у торговца ${esc(traderName(u.trader))}">LL${u.value}${u.trader !== t.trader ? " " + esc(traderName(u.trader)) : ""}</span>`,
@@ -1317,6 +1331,18 @@ function qLink(id) {
 // условия открытия квеста после патча 1.1: лояльность, группа заданий, разговор, задержка
 function unlockLinesHtml(t) {
 	const lines = [];
+	if (t.event)
+		lines.push(
+			`<div class="line"><b>Ивент:</b> ${esc(t.event)} <span class="muted">— временный квест, доступен, пока идёт ивент/сезон</span></div>`,
+		);
+	if (t.source === "wiki")
+		lines.push(
+			`<div class="line"><b>Источник:</b> <a href="${esc(t.wiki)}" target="_blank" rel="noopener">вики Escape from Tarkov ↗</a> <span class="muted">(CC BY-SA). На tarkov.dev этого квеста нет, поэтому цели — текстом, без предметов и точек на карте.</span></div>`,
+		);
+	if (t.requiresAny)
+		lines.push(
+			`<div class="line"><b>Достаточно любого</b> из предыдущих квестов</div>`,
+		);
 	if (t.stale)
 		lines.push(
 			`<div class="line warn"><b>⚠ Нет в свежих данных tarkov.dev</b> (с ${esc(t.stale)}): возможно, квест убрали из игры или это сбой их выгрузки. Показан по последним известным данным.</div>`,
@@ -3341,6 +3367,8 @@ function rmNodeHtml(t, g) {
 		badges.push(
 			`<span class="rm-b alt" title="Выполнение провалит: ${esc(willFail.map((id) => (taskById.get(id) || {}).name || id).join(", "))}">⚠</span>`,
 		);
+	if (t.event)
+		badges.push(`<span class="rm-b ev" title="Ивент: ${esc(t.event)}">И</span>`);
 	for (const u of llReqs(t))
 		badges.push(
 			`<span class="rm-b ll${traderLL(u.trader) >= u.value ? " ok" : ""}" title="Нужен ${u.value}-й уровень лояльности у торговца ${esc(traderName(u.trader))}">LL${u.value}</span>`,
@@ -3744,7 +3772,7 @@ function shellHtml(av) {
       <h3>Предложения по улучшению</h3>
       <p>Идеи и замечания присылайте на <a href="mailto:mixic-pro@mail.ru">mixic-pro@mail.ru</a>.</p>
       <h3>Данные</h3>
-      <p>Квесты, предметы, иконки и карты берутся из открытого проекта <a href="https://tarkov.dev" target="_blank" rel="noopener">tarkov.dev</a>. Прогресс хранится локально в вашем браузере — сервера и регистрации нет.</p>
+      <p>Квесты, предметы, иконки и карты берутся из открытого проекта <a href="https://tarkov.dev" target="_blank" rel="noopener">tarkov.dev</a>. Квесты, которых там нет (ивенты, сезон KORD BREACH и др.), и описания сюжетных глав — с <a href="https://escapefromtarkov.fandom.com/ru/" target="_blank" rel="noopener">вики Escape from Tarkov</a> (лицензия <a href="https://creativecommons.org/licenses/by-sa/3.0/deed.ru" target="_blank" rel="noopener">CC BY-SA 3.0</a>). Прогресс хранится локально в вашем браузере — сервера и регистрации нет.</p>
     </div></section>
     <section id="view-mine"></section>
     <section id="view-all" class="hidden"></section>

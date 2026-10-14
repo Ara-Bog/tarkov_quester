@@ -300,6 +300,7 @@ try {
   let carried = 0;
   for (const pt of prev.tasks || []) {
     if (have.has(pt.id)) continue;
+    if (pt.source === 'wiki') continue; // квесты с вики пересобираются из build/wiki_raw.json
     outTasks.push({ ...pt, stale: pt.stale || today });
     carried++;
     // предметы и торговец пропавшего квеста — тоже из прошлой сборки
@@ -310,6 +311,79 @@ try {
   }
   if (carried) console.log('carried over (missing from tarkov.dev):', carried);
 } catch {}
+
+// ---- Квесты с русской вики (build/wiki.mjs) --------------------------------
+// То, чего нет в tarkov.dev: ивенты/сезон KORD BREACH, ветка «На свет» и др. Данные беднее
+// (цели — текстом, без предметов и координат), поэтому помечаются source: 'wiki'.
+// Источник: escapefromtarkov.fandom.com/ru, лицензия CC BY-SA 3.0.
+let wikiMeta = null;
+try {
+  const wraw = JSON.parse(fs.readFileSync(path.join(__dir, 'wiki_raw.json'), 'utf8'));
+  wikiMeta = { source: 'https://escapefromtarkov.fandom.com/ru/', license: wraw.license, fetchedAt: wraw.fetchedAt };
+  const normName = (s) => String(s || '').toLowerCase().replace(/ё/g, 'е').replace(/[«»"„“”]/g, '').replace(/\s+/g, ' ').trim();
+  const have = new Set(outTasks.map((t) => t.id));
+  const fresh = wraw.quests.filter((q) => !have.has(q.id));
+  const byName = new Map([...outTasks, ...fresh].map((t) => [normName(t.name), t.id]));
+  const knownMaps = new Set([...canonMaps.keys()]);
+  // глагол в начале цели -> тип (для плана рейда: что делается в рейде, что сдаётся)
+  const VERB = [
+    [/^(устранить|убить|ликвидировать|нейтрализовать|найти и нейтрализовать)/i, 'shoot', 'Убить'],
+    [/^(передать|сдать)/i, 'giveItem', 'Сдать'],
+    [/^(найти|обыскать|добыть|получить)/i, 'findItem', 'Найти'],
+    [/^(установить|спрятать|оставить|заложить|разместить)/i, 'plantItem', 'Оставить'],
+    [/^(посетить|осмотреть|разведать|изучить|отметить|проверить)/i, 'visit', 'Посетить'],
+    [/^(выжить|выйти|совершить переход)/i, 'extract', 'Выход'],
+    [/^(поговорить|связаться)/i, 'dialogue', 'Поговорить'],
+  ];
+  for (const q of fresh) {
+    const maps = [...new Set(q.locations.map(canonMap).filter((n) => knownMaps.has(n)).map(mapId))];
+    const trader = regTrader(q.trader);
+    const requires = q.previous
+      .map((n) => byName.get(normName(n)))
+      .filter(Boolean)
+      .map((tid) => ({ task: tid, status: q.previousAccept ? ['active', 'complete'] : ['complete'] }));
+    const objectives = q.objectives.map((o, i) => {
+      const v = VERB.find(([re]) => re.test(o.text));
+      return {
+        id: `${q.id}-w${i}`,
+        type: v ? v[1] : 'wiki',
+        action: v ? v[2] : 'Задача',
+        description: o.text,
+        optional: !!o.optional,
+        maps: [],
+        mapsAuto: maps.length === 1 ? maps : undefined,
+        bring: [],
+        handIn: [],
+        keys: [],
+        count: o.count || null,
+        target: null,
+      };
+    });
+    outTasks.push({
+      id: q.id,
+      name: q.name,
+      normalizedName: null,
+      trader,
+      faction: null,
+      minLevel: q.level,
+      kappa: q.kappa,
+      lightkeeper: false,
+      restartable: false,
+      wiki: q.wiki,
+      image: null,
+      maps,
+      requires,
+      requiresAny: q.previousAny && requires.length > 1 ? true : undefined,
+      failedBy: [],
+      event: q.event || undefined,
+      source: 'wiki',
+      objectives,
+    });
+  }
+  console.log('from wiki:', fresh.length, '(already in data:', wraw.quests.length - fresh.length + ')');
+} catch (e) {
+  if (e.code !== 'ENOENT') throw e;
+}
 
 // ---- Assemble ----------------------------------------------------------
 const mapsArr = [...canonMaps.values()].filter((m) => !m.unused).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
@@ -329,6 +403,7 @@ const data = {
   meta: {
     source: raw.source || 'https://api.tarkov.dev/graphql',
     fetchedAt: raw.fetchedAt || undefined,
+    wiki: wikiMeta || undefined,
     lang: 'ru',
     taskCount: outTasks.length,
     itemCount: Object.keys(items).length,

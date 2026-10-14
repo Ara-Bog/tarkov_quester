@@ -851,3 +851,6 @@ body.qm-open { overflow: hidden; }
 .fir-sub { font-size: 11.5px; font-weight: 700; color: var(--gold); margin: 8px 0 6px; }
 .fir-sub:first-child { margin-top: 0; }
 .fir-sub .muted { font-weight: 400; }
+.event-tag { font-size: 10.5px; color: #c9b4f0; border: 1px solid rgba(155,127,201,.45); border-radius: 3px; padding: 0 4px; }
+.wiki-tag { font-size: 10.5px; color: var(--txt-dim); border: 1px dashed var(--line-2); border-radius: 3px; padding: 0 4px; }
+.rm-b.ev { color: #c9b4f0; border-color: rgba(155,127,201,.5); }
