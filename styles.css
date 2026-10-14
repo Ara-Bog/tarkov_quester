@@ -821,3 +821,33 @@ body.qm-open { overflow: hidden; }
 .qm-body { overflow-y: auto; }
 .qm-body .qdetail { padding: 6px 16px 16px; border-bottom: 0; }
 @media (max-width: 640px) { #qmodal { padding: 0; } #qmodal .qm-box { max-height: 100vh; height: 100%; border-radius: 0; } .qm-sp { display: none; } }
+.stale-tag { font-size: 10.5px; color: var(--red); }
+
+/* ---- План локации: переходы, подсказка маркера, общие задачи, «Убить с» ---- */
+/* переход на другую локацию — фиолетовый круг со стрелкой */
+.mk-tr .mk-ico { width: 13px; height: 13px; border-radius: 50%; background: #9b7fc9; border: 2px solid #fff; transform: translate(-50%, -50%); box-shadow: 0 0 3px #000; }
+.mk-tr .mk-name { color: #c9b4f0; font-weight: 600; }
+.mk-tr.mk-hl .mk-ico { transform: translate(-50%, -50%) scale(2.2); }
+/* подсказка у маркера задачи */
+.pin-tip { position: absolute; z-index: 30; width: 290px; pointer-events: none; background: rgba(20,22,24,.96); border: 1px solid var(--gold-dim); border-radius: 8px; padding: 8px 10px; box-shadow: var(--shadow); font-size: 12.5px; line-height: 1.4; }
+.pin-tip .pt-q { font-weight: 700; margin-bottom: 3px; }
+.pin-tip .pt-o { color: var(--txt); }
+.pin-tip .pt-h { margin-top: 4px; font-size: 10.5px; color: var(--txt-mut); }
+/* карта в обычном режиме закреплена при прокрутке списка задач справа */
+@media (min-width: 981px) {
+  .loc-layout .loc-board-wrap { position: sticky; top: 8px; }
+}
+/* общие задачи (без привязки к карте) — отдельный приглушённый блок */
+.qg-general > summary { cursor: pointer; list-style: none; padding: 2px 0 6px; }
+.qg-general > summary::-webkit-details-marker { display: none; }
+.qg-general > summary::before { content: "▸ "; color: var(--txt-mut); }
+.qg-general[open] > summary::before { content: "▾ "; }
+.qg-general > summary .sec-label { display: inline; }
+.qg-general .qg { opacity: .82; }
+.loc-card.loc-general { border-style: dashed; background: transparent; margin-top: 12px; }
+.map-quests .qg-general { margin-top: 12px; padding-top: 8px; border-top: 1px dashed var(--line-2); }
+.sec-label.kill-with { margin-top: 10px; color: #e08a7a; }
+.it.kill { border-color: rgba(224,138,122,.45) !important; color: #e8a597; }
+.fir-sub { font-size: 11.5px; font-weight: 700; color: var(--gold); margin: 8px 0 6px; }
+.fir-sub:first-child { margin-top: 0; }
+.fir-sub .muted { font-weight: 400; }

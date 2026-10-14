@@ -60,39 +60,79 @@ if (!out['the-lab']) {
   }
 }
 
-// --- выходы (только PMC + общие, без чисто диких) и спавны боссов из API ---
-// Реальные зоны боссов: boss.spawnLocations[].spawnKey ТОЧНО совпадает со spawn.zoneName.
-// Берём центроид каждой боссовой зоны -> один маркер на зону с именем босса.
-// Где боссов нет (Map.bosses пуст, напр. Эпицентр) — маркеров не будет.
+// --- выходы (только PMC + общие, без чисто диких), переходы и спавны боссов ---
+// Источник — статичные JSON tarkov.dev (json.tarkov.dev/regular/maps + словарь maps_ru): GraphQL
+// api.tarkov.dev с осени 2026 не отвечает. Зоны боссов: boss.spawnLocations[].spawnKey совпадает со
+// spawn.zoneName (если у зоны нет своих positions) — берём центроид зоны, один маркер на зону.
 const r1 = (n) => Math.round(n * 10) / 10;
-const gql = await fetch('https://api.tarkov.dev/graphql', {
-  method: 'POST', headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify({ query: `{ maps(lang: ru){ normalizedName extracts{ name faction position{x y z} } bosses{ boss{ name } spawnChance spawnLocations{ spawnKey } } spawns{ zoneName position{x y z} } } }` }),
-});
-const md = (await gql.json()).data.maps;
-for (const m of md) {
+const getJson = async (name) => {
+  const r = await fetch('https://json.tarkov.dev/regular/' + name);
+  if (!r.ok) throw new Error(name + ': HTTP ' + r.status);
+  return (await r.json()).data;
+};
+const [mapsD, mapsRu] = await Promise.all([getJson('maps'), getJson('maps_ru')]);
+// прошлый maps-geo.json: у части зон боссов в JSON нет координат (напр. Общага/Заправка на Таможне),
+// а в старом GraphQL они были — такие точки сохраняем, чтобы маркеры не пропадали
+let prevGeo = {};
+try { prevGeo = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'maps-geo.json'), 'utf8')); } catch {}
+const tr = (k) => (k == null ? k : mapsRu[k] ?? k);
+const mobName = (id) => tr(mapsD.mobs[id]?.name ?? id);
+const allMaps = Object.values(mapsD.maps);
+// карта-вариант (ночной Завод, Эпицентр 21+, тёмная Лаборатория) -> основная карта с SVG
+const slugOf = (id) => {
+  const n = mapsD.maps[id]?.normalizedName;
+  return { 'night-factory': 'factory', 'ground-zero-21': 'ground-zero', 'ground-zero-tutorial': 'ground-zero', 'the-lab-dark': 'the-lab' }[n] || n;
+};
+for (const m of allMaps) {
   const g = out[m.normalizedName];
   if (!g) continue;
   g.extracts = (m.extracts || [])
     .filter((e) => e.position && /pmc|shared/i.test(e.faction || ''))
-    .map((e) => ({ name: e.name, faction: (e.faction || 'shared').toLowerCase(), x: r1(e.position.x), z: r1(e.position.z), y: r1(e.position.y) }));
+    .map((e) => ({ name: tr(e.name), faction: (e.faction || 'shared').toLowerCase(), x: r1(e.position.x), z: r1(e.position.z), y: r1(e.position.y) }));
+  // переходы между локациями (транзиты): куда ведёт + точка
+  g.transits = (m.transits || [])
+    .filter((t) => t.position)
+    .map((t) => ({ name: tr(t.description), to: slugOf(t.map) || null, x: r1(t.position.x), z: r1(t.position.z), y: r1(t.position.y) }));
 
-  // zoneName -> set of boss names, что спавнятся в этой зоне
-  const zoneBosses = {};
-  for (const b of m.bosses || []) for (const sl of b.spawnLocations || []) { if (sl.spawnKey) (zoneBosses[sl.spawnKey] ||= new Set()).add(b.boss.name); }
-  // координаты спавнов в боссовых зонах
-  const zonePts = {};
-  for (const s of m.spawns || []) { if (s.position && zoneBosses[s.zoneName]) (zonePts[s.zoneName] ||= []).push(s.position); }
+  const bosses = (m.bosses || []).filter((b) => b.spawnChance > 0);
+  // zoneName -> set of boss names; точки зоны — из spawnLocations[].positions или из spawns
+  const zoneBosses = {}, zonePts = {};
+  for (const b of bosses)
+    for (const sl of b.spawnLocations || []) {
+      if (!sl.spawnKey) continue;
+      (zoneBosses[sl.spawnKey] ||= new Set()).add(mobName(b.mob));
+      if (sl.positions?.length) (zonePts[sl.spawnKey] ||= []).push(...sl.positions);
+    }
+  const ownPts = new Set(Object.keys(zonePts)); // у этих зон точки уже есть из spawnLocations
+  for (const s of m.spawns || []) if (s.position && zoneBosses[s.zoneName] && !ownPts.has(s.zoneName)) (zonePts[s.zoneName] ||= []).push(s.position);
   const bossSpawns = [];
   for (const [zone, pts] of Object.entries(zonePts)) {
     if (!pts.length) continue;
     const cx = pts.reduce((a, p) => a + p.x, 0) / pts.length, cz = pts.reduce((a, p) => a + p.z, 0) / pts.length, cy = pts.reduce((a, p) => a + (p.y || 0), 0) / pts.length;
     bossSpawns.push({ x: r1(cx), z: r1(cz), y: r1(cy), bosses: [...zoneBosses[zone]] });
   }
+  for (const p of prevGeo[m.normalizedName]?.bossSpawns || []) {
+    const near = bossSpawns.find((s) => Math.hypot(s.x - p.x, s.z - p.z) < 15);
+    if (near) for (const n of p.bosses) { if (!near.bosses.includes(n)) near.bosses.push(n); }
+    else bossSpawns.push(p);
+  }
   g.bossSpawns = bossSpawns;
-  g.bosses = (m.bosses || []).map((b) => ({ name: b.boss.name, chance: Math.round((b.spawnChance || 0) * 100) }))
+  g.bosses = bosses
+    .map((b) => ({ name: mobName(b.mob), chance: Math.round((b.spawnChance || 0) * 100) }))
     .filter((b, i, a) => a.findIndex((x) => x.name === b.name) === i)
     .sort((a, b) => b.chance - a.chance);
+}
+
+// Лаборатория: этажи в конфиге tarkov.dev заданы тайлами (без svgLayer), поэтому экстенты
+// по высоте задаём вручную по их maps.json: ниже -0.9 — технический уровень, выше 3 в зоне
+// [[-101,-422],[-271,-270]] — второй, остальное — первый (он же «земля» по умолчанию).
+if (out['the-lab']) {
+  const lb = out['the-lab'].bounds;
+  out['the-lab'].ground = 'First_Level';
+  out['the-lab'].extents = {
+    Technical_Level: [[lb[0][0], lb[0][1], lb[1][0], lb[1][1], -10000, -0.9]],
+    Second_Level: [[-101, -422, -271, -270, 3, 10000]],
+  };
 }
 
 // --- этажи карты ---

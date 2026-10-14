@@ -183,6 +183,8 @@ function mapsFromText(text) {
 // эффективные локации цели: из данных, иначе вычисленные по описанию
 function effectiveMaps(o) {
 	if (o.maps && o.maps.length) return o.maps;
+	// выведенная при сборке локация: карта босса / единственная карта остальных целей квеста
+	if (o.mapsAuto && o.mapsAuto.length) return o.mapsAuto;
 	return mapsFromText(o.description);
 }
 const traderById = new Map();
@@ -293,7 +295,8 @@ const ui = {
 	onbQuery: "",
 	plannerTab: "plan",
 	map: { z: 0, x: 0, y: 0 },
-	mapLayers: { extracts: true, bosses: true, quests: true },
+	mapLayers: { extracts: true, bosses: true, quests: true, transits: true },
+	showGeneral: true, // блок «Общие задачи» на странице локации развёрнут
 	mapFullscreen: false,
 	mapFloor: null,
 	showFindings: true, // карточка «Найти в рейде» (предметы квестов + список находок)
@@ -786,15 +789,22 @@ function removeFromMine(id) {
 }
 // "У меня сейчас этот квест": все предыдущие по ветке -> Выполнен, сам квест -> активен.
 function markAsCurrent(id) {
-	const toComplete = new Set();
+	const toComplete = new Set(),
+		toActivate = new Set(); // предыдущие, которые достаточно лишь ВЗЯТЬ (параллельные части)
 	(function collect(qid) {
 		const t = taskById.get(qid);
 		if (!t) return;
 		for (const r of t.requires || []) {
-			// идём только по основной ветке (status=complete); active/failed-ветки
-			// не достраиваем — это альтернативные/опциональные предыдущие квесты
+			// идём только по основной ветке; failed-ветки не достраиваем — это альтернативы
 			const st = r.status || ["complete"];
-			if (st.includes("complete") && !st.includes("failed") && !toComplete.has(r.task)) {
+			if (st.includes("failed")) continue;
+			if (toComplete.has(r.task) || toActivate.has(r.task)) continue;
+			if (st.includes("active")) {
+				// «взят или выполнен» (напр. «Тарковский стрелок» 5 и 6 идут параллельно):
+				// предыдущий не закрываем, а оставляем активным — если он ещё не выполнен
+				if (!state.completed.has(r.task)) toActivate.add(r.task);
+				collect(r.task);
+			} else if (st.includes("complete")) {
 				toComplete.add(r.task);
 				collect(r.task);
 			}
@@ -803,6 +813,10 @@ function markAsCurrent(id) {
 	for (const q of toComplete) {
 		state.completed.add(q);
 		state.failed.delete(q);
+	}
+	for (const q of toActivate) {
+		state.failed.delete(q);
+		state.active.add(q);
 	}
 	// раз квест уже взят — значит нужный ему уровень лояльности достигнут (и у предыдущих тоже)
 	let llChanged = false;
@@ -822,7 +836,10 @@ function markAsCurrent(id) {
 	renderStats();
 	renderActiveViews();
 	toast(
-		`«${taskById.get(id).name}» — текущий. Предыдущих отмечено выполненными: ${toComplete.size}.`,
+		`«${taskById.get(id).name}» — текущий. Предыдущих отмечено выполненными: ${toComplete.size}.` +
+			(toActivate.size
+				? ` Параллельно в работе: ${[...toActivate].map((q) => taskById.get(q)?.name).join(", ")}.`
+				: ""),
 	);
 }
 function resetProgress() {
@@ -972,12 +989,12 @@ function filteredTasks(scope) {
 		if (f.plan && !state.plan.has(t.id)) return false;
 		if (f.trader && t.trader !== f.trader) return false;
 		if (f.map === "__none__") {
-			if (t.maps.length || t.objectives.some((o) => o.maps.length))
+			if (t.maps.length || t.objectives.some((o) => effectiveMaps(o).length))
 				return false;
 		} else if (
 			f.map &&
 			!t.maps.includes(f.map) &&
-			!t.objectives.some((o) => o.maps.includes(f.map))
+			!t.objectives.some((o) => effectiveMaps(o).includes(f.map))
 		)
 			return false;
 		if (f.action && !t.objectives.some((o) => o.action === f.action))
@@ -1061,9 +1078,14 @@ function renderStats() {
 
 // ---------- Quest table -------------------------------------------------
 function bringMini(t) {
-	const m = new Map();
+	const m = new Map(),
+		weapons = new Set(); // оружие «убить с» — отдельно, это не то, что надо взять/заложить
 	for (const o of t.objectives)
 		for (const b of o.bring) {
+			if (b.kind === "weapon") {
+				(b.anyOf || [b.item]).forEach((id) => id && weapons.add(id));
+				continue;
+			}
 			const id = b.item || (b.anyOf && b.anyOf[0]);
 			if (!id) continue;
 			const e = m.get(id) || { id, count: 0 };
@@ -1077,7 +1099,11 @@ function bringMini(t) {
 				`<span class="it" title="${esc(itemName(e.id))} — взять с собой">${itImg(e.id)}<span class="cnt">${e.count}</span></span>`,
 		)
 		.join("");
-	return html || '<span class="muted">—</span>';
+	const w = [...weapons];
+	const kill = w.length
+		? `<span class="it kill" title="Убить с: ${esc(w.slice(0, 12).map(itemName).join(", "))}${w.length > 12 ? "…" : ""}">🔫 ${w.length > 1 ? `${w.length} вар.` : esc(itemShort(w[0]))}</span>`
+		: "";
+	return html + kill || '<span class="muted">—</span>';
 }
 function handInMini(t) {
 	const m = new Map();
@@ -1137,6 +1163,10 @@ function questRowHtml(t, scope) {
 			.join("") || '<span class="muted">—</span>';
 	const sub = [esc(traderName(t.trader))];
 	if (t.minLevel) sub.push("ур. " + t.minLevel);
+	if (t.stale)
+		sub.push(
+			`<span class="stale-tag" title="Нет в свежих данных tarkov.dev (с ${esc(t.stale)})">⚠ устар.</span>`,
+		);
 	for (const u of llReqs(t))
 		sub.push(
 			`<span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}" title="Нужен ${u.value}-й уровень лояльности у торговца ${esc(traderName(u.trader))}">LL${u.value}${u.trader !== t.trader ? " " + esc(traderName(u.trader)) : ""}</span>`,
@@ -1198,6 +1228,14 @@ function anyChip(e, title) {
 function objHtml(o, qname) {
 	const its = [];
 	for (const b of o.bring) {
+		if (b.kind === "weapon") {
+			// оружие, из которого засчитываются убийства, — не «взять с собой»
+			const ids = b.anyOf || [b.item];
+			its.push(
+				`<span class="it kill" title="Убить с (${ids.length > 1 ? "одно из" : "оружие"}): ${esc(ids.map(itemName).join(", "))}">🔫 убить с: ${itImg(ids[0])}${esc(itemShort(ids[0]))}${ids.length > 1 ? ` +${ids.length - 1}` : ""}</span>`,
+			);
+			continue;
+		}
 		if (b.anyOf) {
 			its.push(anyChip(b, "взять с собой — одно из"));
 			continue;
@@ -1260,7 +1298,8 @@ function objHtml(o, qname) {
 			`<span class="it key" title="${esc(itemName(k))} — ключ">${itImg(k)}🔑 ${esc(itemShort(k))}</span>`,
 		);
 	}
-	const loc = o.maps.length ? o.maps.map(mapName).join(", ") : "";
+	const em = effectiveMaps(o);
+	const loc = em.length ? em.map(mapName).join(", ") : "";
 	const isDone = trackable(o) && objRemaining(o) === 0 && objDone(o.id) > 0;
 	const track = trackControlHtml(o);
 	return `<div class="obj${o.optional ? " opt" : ""}${isDone ? " obj-done" : ""}">
@@ -1278,6 +1317,10 @@ function qLink(id) {
 // условия открытия квеста после патча 1.1: лояльность, группа заданий, разговор, задержка
 function unlockLinesHtml(t) {
 	const lines = [];
+	if (t.stale)
+		lines.push(
+			`<div class="line warn"><b>⚠ Нет в свежих данных tarkov.dev</b> (с ${esc(t.stale)}): возможно, квест убрали из игры или это сбой их выгрузки. Показан по последним известным данным.</div>`,
+		);
 	const ll = llReqs(t).map(
 		(u) =>
 			`${esc(traderName(u.trader))}: <span class="ll-tag${traderLL(u.trader) >= u.value ? " ok" : ""}">LL${u.value}</span>`,
@@ -1587,6 +1630,21 @@ function choiceHtml(c, sectionFir) {
     <select data-choice="${c.key}">${opts}</select><span class="cnt">×${c.count}</span>${sectionFir !== undefined ? `<span class="firlbl">${c.fir ? "FiR" : "куп."}</span>` : ""}</span>`;
 }
 
+// «Взять с собой / заложить» и отдельно «Убить с» (оружие, из которого нужно убивать) — раньше
+// оружие для убийств шло вперемешку с тем, что надо заложить, и это путало.
+function bringSectionsHtml(entries, choices, emptyNote = "Ничего закладывать не нужно.") {
+	const isW = (k) => k === "weapon";
+	const take =
+		entries.filter((e) => !isW(e.kind)).map(takeHtml).join("") +
+		choices.filter((c) => !isW(c.kind)).map((c) => choiceHtml(c)).join("");
+	const kill =
+		entries.filter((e) => isW(e.kind)).map(takeHtml).join("") +
+		choices.filter((c) => isW(c.kind)).map((c) => choiceHtml(c)).join("");
+	return `<div class="sec-label">Взять с собой / заложить</div>
+		${take ? `<div class="take-list">${take}</div>` : `<div class="empty-note">${emptyNote}</div>`}
+		${kill ? `<div class="sec-label kill-with">Убить с <span class="muted" style="font-weight:400">— из этого оружия засчитываются убийства</span></div><div class="take-list">${kill}</div>` : ""}`;
+}
+
 // Строки списка находок (все группы, у каждого — пометка группы). Используется в нескольких местах.
 function findingsRowsHtml() {
 	const rows = [];
@@ -1619,8 +1677,8 @@ function findingsBlockHtml() {
 const blkSwitch = (k, on) =>
 	`<label class="switch" title="Показать / скрыть"><input type="checkbox" data-toggle="${k}" ${on ? "checked" : ""}><span class="sw"></span></label>`;
 
-// Один общий список «найти в рейде»: предметы квестов с пометкой «найти в рейде» (из ВСЕХ активных
-// задач — их находишь в любом рейде, поэтому показываем на каждой локации) + предметы «Список находок».
+// Предметы «найти в рейде» для квестов: из ВСЕХ активных задач, которые можно добыть на этой
+// локации (или где угодно). Личный «Список находок» — отдельно, см. findInRaidSectionsHtml.
 function findInRaidRows(mapId) {
 	const rows = [];
 	const byItem = new Map(); // id предмета -> { count, quests:Set }
@@ -1643,7 +1701,7 @@ function findInRaidRows(mapId) {
 					o.type === "giveItem";
 				if (!isFind) continue;
 			}
-			const em = isStory ? o.maps || [] : effectiveMaps(o);
+			const em = isStory ? storyMaps(o) : effectiveMaps(o);
 			const anywhere = em.length === 0;
 			if (!anywhere && !em.includes(mapId)) continue; // на этой локации не добыть
 			for (const h of o.handIn || []) {
@@ -1731,28 +1789,38 @@ function findInRaidRows(mapId) {
 			`<li class="cat-row ${lootDone(key, e.count) ? "loot-found" : ""}"><span class="cat-ico" title="${e.cat ? "категория предметов" : "предмет"}">${catEmoji(txt, e.cat)}</span><span class="nm">${esc(txt)}</span>${firBadge(e.fir)}${lootStep(key, e.count)}${tagHtml([...e.quests])}</li>`,
 		);
 	}
-	// предметы из вкладки «Список находок»
-	rows.push(...findingsRowsHtml());
 	return rows;
+}
+// «Найти в рейде»: два подраздела — предметы для квестов и личный «Список находок» (раньше шли
+// одним списком и путались)
+function findInRaidSectionsHtml(mapId) {
+	const quest = findInRaidRows(mapId),
+		mine = findingsRowsHtml();
+	if (!quest.length && !mine.length) return "";
+	return (
+		(quest.length
+			? `<div class="fir-sub">Для квестов</div><ul class="fg-items">${quest.join("")}</ul>`
+			: "") +
+		(mine.length
+			? `<div class="fir-sub">Мой список находок <span class="muted">— вкладка «Список находок»</span></div><ul class="fg-items">${mine.join("")}</ul>`
+			: "")
+	);
 }
 // Отдельная карточка под основной (в боковой панели локации)
 function findingsLocCard(mapId) {
-	const rows = findInRaidRows(mapId);
-	if (!rows.length) return "";
+	const body = findInRaidSectionsHtml(mapId);
+	if (!body) return "";
 	return `<div class="loc-card findings-loc-card" data-blk="findings"><div class="loc-body">
       <div class="le-head"><div class="sec-label">Найти в рейде</div>${blkSwitch("findings", ui.showFindings)}</div>
-      <div class="le-body"${ui.showFindings ? "" : " hidden"}>
-        <div class="empty-note" style="margin:0 0 8px">предметы для квестов + ваш «Список находок»</div>
-        <ul class="fg-items">${rows.join("")}</ul>
-      </div></div></div>`;
+      <div class="le-body"${ui.showFindings ? "" : " hidden"}>${body}</div></div></div>`;
 }
 // Тот же список в углу полноэкранной карты
 function findingsCornerBlock(mapId) {
-	const rows = findInRaidRows(mapId);
-	if (!rows.length) return "";
+	const body = findInRaidSectionsHtml(mapId);
+	if (!body) return "";
 	return `<div class="loc-extra" data-blk="findings">
       <div class="le-head"><span class="sec-label">Найти в рейде</span>${blkSwitch("findings", ui.showFindings)}</div>
-      <div class="le-body"${ui.showFindings ? "" : " hidden"}><ul class="fg-items">${rows.join("")}</ul></div>
+      <div class="le-body"${ui.showFindings ? "" : " hidden"}>${body}</div>
     </div>`;
 }
 // блок сюжетных задач текущей стадии на этой локации (без точек на карте — у них нет координат)
@@ -1762,7 +1830,7 @@ function storyLocBlock(mapId) {
 	return `<div class="obj-by-quest story-loc"><div class="sec-label">Сюжетные задачи</div><ul class="ol">${tasks
 		.map(
 			({ q, o }) =>
-				`<li><span class="li-txt"><span class="a" style="color:var(--gold)">${esc(q.name)}</span> — <b>${esc(o.action)}:</b> ${esc(o.desc)}${o.fir ? ' <span class="firlbl">FiR</span>' : ""}</span></li>`,
+				`<li><span class="li-ctrl"><input type="checkbox" class="track-chk" data-story="${o.id}" title="Отметить выполнение (откроет следующую стадию главы)"></span><span class="li-txt"><span class="a" style="color:var(--gold)">${esc(q.name)}</span> — <b>${esc(o.action)}:</b> ${esc(o.desc)}${o.fir ? ' <span class="firlbl">FiR</span>' : ""}</span></li>`,
 		)
 		.join("")}</ul></div>`;
 }
@@ -1884,14 +1952,16 @@ const onMap = (f) =>
 	f.left <= 105 &&
 	f.top >= -5 &&
 	f.top <= 105;
-// определить этаж (svgLayer) по координате цели; иначе земля
+// базовый этаж карты: обычно первый в списке (земля); у Лаборатории — First_Level
+const groundFloor = (geo) => geo.ground || geo.floors[0];
+// определить этаж (svgLayer) по координате цели; иначе земля (базовый этаж)
 function assignFloor(x, z, y, geo) {
 	if (!geo || !geo.floors) return null;
-	let best = geo.floors[0],
-		bestIdx = 0;
+	let best = groundFloor(geo),
+		bestIdx = -1;
 	for (const floor in geo.extents || {}) {
 		const idx = geo.floors.indexOf(floor);
-		if (idx <= bestIdx) continue;
+		if (idx < 0 || idx <= bestIdx) continue;
 		for (const r of geo.extents[floor]) {
 			const [x1, z1, x2, z2, hmin, hmax] = r;
 			if (
@@ -1923,7 +1993,7 @@ function activeLocations() {
 		if (state.completed.has(tid) || failedAll.has(tid)) continue;
 		const t = taskById.get(tid);
 		if (!t) continue;
-		for (const o of t.objectives) for (const m of o.maps) s.add(m);
+		for (const o of t.objectives) for (const m of effectiveMaps(o)) s.add(m);
 	}
 	return s;
 }
@@ -1943,6 +2013,51 @@ function plannerSubnav() {
 		.join("")}</div>`;
 }
 
+// Частичная перерисовка страницы локации: заменяем узлы вокруг живой .map-view и слои маркеров
+// внутри неё; сам SVG, кнопки зума/этажей (у них прямые обработчики) и fullscreen остаются.
+function patchPlannerLocation(root, html) {
+	const oldMV = root.querySelector(".map-view");
+	if (!oldMV) return false;
+	const tpl = document.createElement("template");
+	tpl.innerHTML = html;
+	const fresh = tpl.content;
+	const newMV = fresh.querySelector(".map-view");
+	if (!newMV) return false;
+	// смена режима (обычный <-> развёрнутый) меняет разметку кнопок — тогда только полная перерисовка
+	if (oldMV.classList.contains("fs") !== newMV.classList.contains("fs")) return false;
+	// 1) внутри карты: панель слоёв, угловой список задач, слои маркеров
+	for (const sel of [".map-layers", ".map-quests"]) {
+		const o = oldMV.querySelector(sel),
+			n = newMV.querySelector(sel);
+		if (o && n) o.replaceWith(n);
+	}
+	const oldInner = oldMV.querySelector("#map-inner"),
+		newInner = newMV.querySelector("#map-inner");
+	for (const n of [...newInner.children]) {
+		if (n.id === "map-svg") continue;
+		const o = oldInner.querySelector(":scope > ." + n.classList[0]);
+		if (o) o.replaceWith(n);
+		else oldInner.appendChild(n);
+	}
+	// 2) всё вне карты: заменяем узлы-«соседи» по пути от root до .map-view
+	let oldNode = oldMV,
+		newNode = newMV;
+	while (oldNode.parentElement && oldNode !== root) {
+		const op = oldNode.parentElement,
+			np = newNode.parentNode;
+		const nKids = [...np.childNodes],
+			idx = nKids.indexOf(newNode);
+		// заменяем всех соседей, кроме ветки с картой
+		[...op.childNodes].forEach((c) => c !== oldNode && c.remove());
+		nKids.slice(0, idx).forEach((c) => op.insertBefore(c, oldNode));
+		nKids.slice(idx + 1).forEach((c) => op.appendChild(c));
+		oldNode = op;
+		newNode = np;
+		if (op === root) break;
+	}
+	if (typeof root._applyFloor === "function") root._applyFloor();
+	return true;
+}
 function renderPlanner() {
 	const root = document.getElementById("view-planner");
 	// под-вкладка по локации
@@ -1954,12 +2069,19 @@ function renderPlanner() {
 					if (ui.view === "planner") renderPlanner();
 				});
 			}
-			root.innerHTML =
-				plannerSubnav() + plannerLocationHtml(ui.plannerTab);
+			const html = plannerSubnav() + plannerLocationHtml(ui.plannerTab);
+			// карта этой локации уже на странице — обновляем всё вокруг неё, не пересоздавая
+			// .map-view: иначе слетает полноэкранный режим (элемент в fullscreen удаляется),
+			// а в обычном режиме — масштаб/сдвиг карты и прокрутка
+			if (root.dataset.loc === ui.plannerTab && patchPlannerLocation(root, html))
+				return;
+			root.innerHTML = html;
+			root.dataset.loc = ui.plannerTab;
 			initMap();
 			return;
 		}
 	}
+	delete root.dataset.loc;
 	const findings = findingsBlockHtml();
 	const refreshCat = () => {
 		if (state.findGroups.length && !catalog)
@@ -1974,7 +2096,7 @@ function renderPlanner() {
 		const t = taskById.get(tid);
 		if (!t) continue;
 		const s = new Set();
-		for (const o of t.objectives) for (const m of o.maps) s.add(m);
+		for (const o of t.objectives) for (const m of effectiveMaps(o)) s.add(m);
 		for (const m of s) actCount[m] = (actCount[m] || 0) + 1;
 	}
 	const mapPicker = plocs.length
@@ -2023,9 +2145,6 @@ function renderPlanner() {
 		const b = agg.locs.get(loc);
 		const color = loc === "none" ? "#666" : mapColor(loc);
 		const title = loc === "none" ? "Без привязки к локации" : mapName(loc);
-		const takes =
-			[...b.bring.values()].map(takeHtml).join("") +
-			b.choices.map((c) => choiceHtml(c)).join("");
 		const groups = [...b.quests.entries()]
 			.map(([tid, objs]) => {
 				const t = taskById.get(tid);
@@ -2039,18 +2158,17 @@ function renderPlanner() {
 		cards += `<div class="loc-card">
       <h3 style="border-left-color:${color}">${esc(title)} <span class="n">${b.quests.size} квест(ов)</span></h3>
       <div class="loc-body">
-        <div class="sec-label">Взять с собой / заложить</div>
-        ${takes ? `<div class="take-list">${takes}</div>` : '<div class="empty-note">Ничего закладывать не нужно.</div>'}
+        ${bringSectionsHtml([...b.bring.values()], b.choices)}
         <div class="obj-by-quest"><div class="sec-label">Задачи на локации</div>${groups}</div>
       </div>
     </div>`;
 	}
 
-	const bringList =
-		[...bringTotals.values()]
-			.sort((a, b) => b.count - a.count)
-			.map(takeHtml)
-			.join("") || '<span class="empty-note">—</span>';
+	const bringList = bringSectionsHtml(
+		[...bringTotals.values()].sort((a, b) => b.count - a.count),
+		[],
+		"—",
+	);
 
 	// разделяем "сдать": что можно купить/найти на барахолке vs только из рейда (FiR)
 	const buyParts = [],
@@ -2095,8 +2213,8 @@ function renderPlanner() {
       <div>${cards}</div>
       <div class="plan-right">
         <aside class="summary-card">
-          <h3>Итого взять с собой / заложить</h3>
-          <div class="take-list">${bringList}</div>
+          <h3>Итого с собой</h3>
+          ${bringList}
           ${handSection}
           <div class="sub-h">Квесты в плане</div>
           <ul class="plan-quest-list">${planList}</ul>
@@ -2145,7 +2263,9 @@ function plannerLocationHtml(mapId) {
 
 	const pins = [],
 		noCoord = [],
-		questGroups = [];
+		questGroups = [], // квесты с целями на этой локации
+		generalGroups = []; // общие: цели без привязки к карте (можно сделать где угодно)
+	const localTids = new Set(agg.locs.get(mapId)?.quests.keys() || []);
 	if (b)
 		for (const [tid, objs] of b.quests) {
 			const t = taskById.get(tid),
@@ -2162,7 +2282,7 @@ function plannerLocationHtml(mapId) {
 								? assignFloor(c.x, c.z, c.y || 0, geo)
 								: "";
 							pins.push(
-								`<div class="pin-dot" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${col}" data-pinobj="${o.id}" data-quest="${tid}"${fl ? ` data-floor="${fl}"` : ""} title="${esc(t.name)} — ${esc(o.action)}: ${esc(o.description)}"></div>`,
+								`<div class="pin-dot" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%;--c:${col}" data-pinobj="${o.id}" data-quest="${tid}"${fl ? ` data-floor="${fl}"` : ""}></div>`,
 							);
 						}
 					}
@@ -2171,12 +2291,11 @@ function plannerLocationHtml(mapId) {
 						`<div class="marker" style="--c:${col}"><span class="pin"></span><div class="m-body"><div class="m-q">${esc(t.name)}</div><div class="m-txt"><b>${esc(o.action)}:</b> ${esc(o.description)}</div></div><span class="m-track">${trackControlHtml(o)}</span></div>`,
 					);
 			}
-			const anyLoc = t.maps.length === 0;
 			const finBtn = questProgress(t).allDone
 				? `<button class="btn-finish" data-finish="${tid}" title="Все обязательные цели закрыты — отметить квест выполненным">Завершить ✓</button>`
 				: "";
-			questGroups.push(
-				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}${anyLoc ? ' <span class="anyloc-tag" title="Без привязки к локации — можно выполнить на любой карте">любая локация</span>' : ""}${finBtn}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.baseName)).join("")}</ul></div>`,
+			(localTids.has(tid) ? questGroups : generalGroups).push(
+				`<div class="qg" data-quest="${tid}"><div class="qt" style="color:${col}">${esc(t.name)}${finBtn}</div><ul class="ol">${objs.map((o) => objLiHtml(o, t.baseName)).join("")}</ul></div>`,
 			);
 		}
 	const exPins = geo
@@ -2199,12 +2318,28 @@ function plannerLocationHtml(mapId) {
 				})
 				.join("")
 		: "";
+	const transitPins = geo
+		? (geo.transits || [])
+				.map((tr) => {
+					const f = geoFrac(tr.x, tr.z, geo);
+					if (!onMap(f)) return "";
+					const fl = geo.floors ? assignFloor(tr.x, tr.z, tr.y || 0, geo) : "";
+					const target = Object.entries(MAP_SLUG).find(([, sl]) => sl === tr.to);
+					const label = target ? `→ ${target[0]}` : tr.name;
+					return `<div class="mk mk-tr" style="left:${f.left.toFixed(2)}%;top:${f.top.toFixed(2)}%"${fl ? ` data-floor="${fl}"` : ""} title="${esc(tr.name)}"><i class="mk-ico"></i><span class="mk-name">${esc(label)}</span></div>`;
+				})
+				.join("")
+		: "";
 	const bossLegend =
 		geo && geo.bosses && geo.bosses.length
 			? `<div class="boss-legend">☠ Боссы: ${geo.bosses.map((x) => `${esc(x.name)} <span class="muted">${x.chance}%</span>`).join(" · ")}</div>`
 			: "";
 
-	const cornerPanel = `<div class="map-quests"><div class="mq-head">Текущие задачи</div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}${storyLocBlock(mapId)}${findingsCornerBlock(mapId)}</div>`;
+	// задачи на этой локации и общие (без привязки к карте) — отдельными блоками, чтобы не сливались
+	const generalBlock = generalGroups.length
+		? `<details class="qg-general"${ui.showGeneral ? " open" : ""}><summary><span class="sec-label">Общие задачи</span><span class="muted"> — без привязки к локации, можно выполнить на любой карте · ${generalGroups.length}</span></summary>${generalGroups.join("")}</details>`
+		: "";
+	const cornerPanel = `<div class="map-quests"><div class="mq-head">Задачи на локации</div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}${storyLocBlock(mapId)}${generalBlock}${findingsCornerBlock(mapId)}</div>`;
 	const lyr = (k, label) =>
 		`<label data-hllayer="${k}"><input type="checkbox" data-layer="${k}" ${ui.mapLayers[k] ? "checked" : ""}> ${label}</label>`;
 	const mapPanel = geo
@@ -2215,14 +2350,14 @@ function plannerLocationHtml(mapId) {
         <button data-mz="fit" title="${ui.mapFullscreen ? "Свернуть карту" : "Развернуть карту"}">${ui.mapFullscreen ? "✕" : "⤢"}</button>
         <button data-mz="fs" title="Во весь экран">⛶</button>
       </div>
-      <div class="map-layers">${lyr("quests", "Квесты (" + pins.length + ")")}${lyr("extracts", "Выходы")}${lyr("bosses", "Боссы")}</div>
+      <div class="map-layers">${lyr("quests", "Квесты (" + pins.length + ")")}${lyr("extracts", "Выходы")}${transitPins ? lyr("transits", "Переходы") : ""}${lyr("bosses", "Боссы")}</div>
       ${
 			geo.floors
 				? `<div class="map-floors">${geo.floors
 						.filter((fl) => !(geo.base || []).includes(fl))
 						.map(
 							(fl) =>
-								`<button data-floor="${fl}" class="${(ui.mapFloor || geo.floors[0]) === fl ? "active" : ""}">${esc((geo.floorNames && geo.floorNames[fl]) || FLOOR_RU[fl] || fl)}</button>`,
+								`<button data-floor="${fl}" class="${(ui.mapFloor || groundFloor(geo)) === fl ? "active" : ""}">${esc((geo.floorNames && geo.floorNames[fl]) || FLOOR_RU[fl] || fl)}</button>`,
 						)
 						.join("")}</div>`
 				: ""
@@ -2232,15 +2367,12 @@ function plannerLocationHtml(mapId) {
         <div class="layer-quests" ${ui.mapLayers.quests ? "" : "hidden"}>${pins.join("")}</div>
         <div class="layer-extracts" ${ui.mapLayers.extracts ? "" : "hidden"}>${exPins}</div>
         <div class="layer-bosses" ${ui.mapLayers.bosses ? "" : "hidden"}>${bossPins}</div>
+        <div class="layer-transits" ${ui.mapLayers.transits ? "" : "hidden"}>${transitPins}</div>
       </div></div>
       ${cornerPanel}
     </div>`
 		: `<div class="empty-note" style="margin:8px 0">Векторная карта для этой локации недоступна. ${mapLink || ""}</div>`;
 
-	const takes = b
-		? [...b.bring.values()].map(takeHtml).join("") +
-			b.choices.map((c) => choiceHtml(c)).join("")
-		: "";
 	return `
     <div class="page-head"><h2 style="color:${geo ? mapColor(mapId) : "var(--gold)"}">${esc(mapName(mapId))}</h2><span class="ph-sub">${b ? b.quests.size : 0} квест(ов) · ${pins.length} маркер(ов) задач</span><div class="ph-actions">${mapLink}</div></div>
     ${bossLegend}
@@ -2251,11 +2383,11 @@ function plannerLocationHtml(mapId) {
       </div>
       <aside class="loc-side">
         <div class="loc-card"><div class="loc-body">
-          <div class="sec-label">Взять с собой / заложить</div>
-          ${takes ? `<div class="take-list">${takes}</div>` : '<div class="empty-note">Ничего закладывать не нужно.</div>'}
-          <div class="obj-by-quest"><div class="sec-label">Задачи <span class="muted" style="font-weight:400">— отметьте выполнение, маркер скроется</span></div>${questGroups.join("") || '<div class="empty-note">Нет активных задач.</div>'}</div>
+          ${bringSectionsHtml(b ? [...b.bring.values()] : [], b ? b.choices : [])}
+          <div class="obj-by-quest"><div class="sec-label">Задачи на локации <span class="muted" style="font-weight:400">— отметьте выполнение, маркер скроется</span></div>${questGroups.join("") || '<div class="empty-note">Нет активных задач на этой локации.</div>'}</div>
           ${storyLocBlock(mapId)}
         </div></div>
+        ${generalBlock ? `<div class="loc-card loc-general"><div class="loc-body">${generalBlock}</div></div>` : ""}
         ${findingsLocCard(mapId)}
       </aside>
     </div>`;
@@ -2303,7 +2435,7 @@ function initMap() {
 		if (!geo || !geo.floors) return;
 		const svg = holder.querySelector("svg");
 		if (!svg) return;
-		const ground = geo.floors[0],
+		const ground = groundFloor(geo),
 			sel = ui.mapFloor || ground,
 			onGround = sel === ground;
 		// «база» — слои, которые показываются вместе с землёй (напр. First_Floor на Таможне);
@@ -2332,6 +2464,7 @@ function initMap() {
 					pf === sel || (onGround && isBase(pf)) ? "1" : "0.22";
 			});
 	};
+	document.getElementById("view-planner")._applyFloor = applyFloor;
 	const ready = () => {
 		const svg = holder.querySelector("svg");
 		if (svg) {
@@ -2489,7 +2622,7 @@ function stagesActiveIndex(stages) {
 }
 function storyObjHtml(o) {
 	const done = state.storyDone.has(o.id);
-	const locs = (o.maps || [])
+	const locs = storyMaps(o)
 		.map(
 			(m) =>
 				`<span class="so-loc" style="--c:${mapColor(m)}">${esc(mapName(m))}</span>`,
@@ -2615,6 +2748,10 @@ function storyActiveObjectives(q) {
 	}
 	return [];
 }
+// локации сюжетной подзадачи: из данных, иначе из текста («…на локации Лес») — у большинства
+// подзадач сюжеток карта указана только в описании
+const storyMaps = (o) =>
+	o.maps && o.maps.length ? o.maps : mapsFromText(o.desc);
 // сюжетные задачи (начатых квестов, текущая стадия, не выполненные) на указанной локации
 function storyTasksForMap(mapId) {
 	const out = [];
@@ -2622,7 +2759,7 @@ function storyTasksForMap(mapId) {
 		if (!(q.autostart || state.storyStarted.has(q.id))) continue;
 		for (const o of storyActiveObjectives(q)) {
 			if (state.storyDone.has(o.id)) continue;
-			if ((o.maps || []).includes(mapId)) out.push({ q, o });
+			if (storyMaps(o).includes(mapId)) out.push({ q, o });
 		}
 	}
 	return out;
@@ -3995,6 +4132,15 @@ function wireEvents() {
 			return;
 		}
 		if (progressChange(e)) return;
+		// сюжетная подзадача на странице локации
+		const st = e.target.closest("input[data-story]");
+		if (st) {
+			if (st.checked) state.storyDone.add(st.dataset.story);
+			else state.storyDone.delete(st.dataset.story);
+			persistStory();
+			renderPlannerKeepScroll();
+			return;
+		}
 		const sel = e.target.closest("[data-choice]");
 		if (sel) {
 			state.planChoices[sel.dataset.choice] = sel.value;
@@ -4032,7 +4178,7 @@ function wireEvents() {
 			.forEach((p) => p.classList.add("li-hl"));
 	};
 	// подсветка меток выходов/боссов при наведении на «Выходы»/«Боссы» в левой менюшке слоёв
-	const LAYER_MK = { extracts: ".mk-ex", bosses: ".mk-boss" };
+	const LAYER_MK = { extracts: ".mk-ex", bosses: ".mk-boss", transits: ".mk-tr" };
 	let hlLayer = null;
 	const setHlLayer = (k) => {
 		if (hlLayer === k) return;
@@ -4045,10 +4191,43 @@ function wireEvents() {
 				.querySelectorAll(LAYER_MK[k])
 				.forEach((p) => p.classList.add("mk-hl"));
 	};
+	// всплывающая подсказка у маркера: какой квест и какая задача (без прокрутки к списку справа)
+	const showPinTip = (pin) => {
+		const mv = pin.closest(".map-view");
+		const t = taskById.get(pin.dataset.quest);
+		const o = t && t.objectives.find((x) => x.id === pin.dataset.pinobj);
+		if (!mv || !o) return;
+		let tip = mv.querySelector(".pin-tip");
+		if (!tip) {
+			tip = document.createElement("div");
+			tip.className = "pin-tip";
+			mv.appendChild(tip);
+		}
+		const prog = trackable(o)
+			? ` <span class="muted">${Math.min(objDone(o.id), objTotal(o))}/${objTotal(o)}</span>`
+			: "";
+		tip.innerHTML = `<div class="pt-q" style="color:${questColor(t.id)}">${esc(t.name)}</div><div class="pt-o"><b>${esc(o.action)}:</b> ${esc(o.description)}${prog}</div><div class="pt-h">клик — отметить +1</div>`;
+		const r = pin.getBoundingClientRect(),
+			mr = mv.getBoundingClientRect();
+		tip.style.left = Math.min(r.left - mr.left + 14, mr.width - 300) + "px";
+		tip.style.top = r.top - mr.top + 14 + "px";
+		tip.hidden = false;
+	};
+	const hidePinTip = () =>
+		planView.querySelectorAll(".pin-tip").forEach((t) => (t.hidden = true));
+	planView.addEventListener(
+		"toggle",
+		(e) => {
+			if (e.target.classList && e.target.classList.contains("qg-general"))
+				ui.showGeneral = e.target.open;
+		},
+		true,
+	);
 	planView.addEventListener("mouseover", (e) => {
 		const pin = e.target.closest(".pin-dot[data-pinobj]");
 		if (pin) {
 			setHlPin(pin.dataset.quest, pin.dataset.pinobj);
+			showPinTip(pin);
 			return;
 		}
 		const ly = e.target.closest(".map-layers [data-hllayer]");
@@ -4064,6 +4243,7 @@ function wireEvents() {
 		const pin = e.target.closest(".pin-dot[data-pinobj]");
 		if (pin && !pin.contains(e.relatedTarget)) {
 			setHlPin(null);
+			hidePinTip();
 			return;
 		}
 		const ly = e.target.closest(".map-layers [data-hllayer]");

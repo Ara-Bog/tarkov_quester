@@ -75,7 +75,10 @@ function objective(o) {
     out.possibleLocations = o.possibleLocations
       .map((pl) => ({ map: mapRef(pl.map), positions: pl.positions }))
       .filter((pl) => pl.map);
-  if (o.targetNames) out.targetNames = o.targetNames.map(tT);
+  if (o.targetNames) {
+    out.targetNames = o.targetNames.map(tT);
+    out.targetKeys = o.targetNames; // исходные ключи (bossKilla, followerBully…) — для привязки к картам боссов
+  }
   if (o.shotType) out.shotType = o.shotType;
   if (o.usingWeapon) out.usingWeapon = items(o.usingWeapon);
   if (o.exitName) out.exitName = tT(o.exitName);
@@ -146,6 +149,18 @@ const traders = Object.values(tradersD).map((t) => ({
   })),
 }));
 
-const json = { data: { tasks, traders }, fetchedAt: new Date().toISOString(), source: BASE };
+// боссы и карты, где они появляются (для целей «убить босса» без указанной локации).
+// Терминал пропускаем: в данных там перечислены почти все боссы.
+const bosses = {};
+for (const m of Object.values(mapsD.maps)) {
+  if (m.normalizedName === 'terminal') continue;
+  for (const b of m.bosses || []) {
+    if (!(b.spawnChance > 0)) continue;
+    const e = (bosses[b.mob] ||= { key: b.mob, name: tM(mapsD.mobs[b.mob]?.name ?? b.mob), maps: [] });
+    if (!e.maps.some((x) => x.id === m.id)) e.maps.push(mapRef(m.id));
+  }
+}
+
+const json = { data: { tasks, traders, bosses: Object.values(bosses) }, fetchedAt: new Date().toISOString(), source: BASE };
 fs.writeFileSync(OUT, JSON.stringify(json), 'utf8');
 console.log(`Fetched ${tasks.length} tasks -> ${path.relative(path.join(__dir, '..'), OUT)} (${(fs.statSync(OUT).size / 1024 / 1024).toFixed(1)} MB)`);

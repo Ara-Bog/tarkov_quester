@@ -202,11 +202,47 @@ for (const g of [...groupsByVar.values()].sort((a, b) => a.variableId.localeComp
   groupsArr.push({ id: g.id, var: g.variableId, trader: g.trader, n: perTrader[g.trader], tiers: [...g.values].sort((a, b) => a - b) });
 }
 
+// ---- Боссы -> карты (для целей «убить босса/свиту» без указанной локации) ---
+const bossMaps = new Map(); // bossKilla -> [map_N]
+for (const b of raw.data.bosses || []) bossMaps.set(b.key, [...new Set(b.maps.map((m) => mapId(m.name)))]);
+// ключ цели -> карты босса: bossX напрямую; followerX* -> bossX (свита); Гунам — карта Knight
+const GOONS = new Set(['followerBigPipe', 'followerBirdEye']);
+function mapsForTarget(key) {
+  // варианты одного босса под разными ключами (ExUsec / exUsecFree — Отступники Ледокола и Маяка)
+  const same = [...bossMaps.keys()].filter((k) => k.toLowerCase() === key.toLowerCase() || k.toLowerCase() === key.toLowerCase() + 'free');
+  if (same.length) return [...new Set(same.flatMap((k) => bossMaps.get(k)))];
+  if (GOONS.has(key)) return bossMaps.get('bossKnight') || [];
+  const m = /^follower([A-Z][a-z]+)/.exec(key) || /^([a-z]+)HelperAgro$/.exec(key);
+  if (m) {
+    const boss = [...bossMaps.keys()].find((k) => k.toLowerCase().startsWith('boss' + m[1].toLowerCase()));
+    if (boss) return bossMaps.get(boss);
+  }
+  return [];
+}
+// типы целей, которые выполняются/добываются в рейде (или сдаются из найденного там)
+const LOCAL_TYPES = new Set(['findItem', 'findQuestItem', 'giveItem', 'giveQuestItem', 'plantItem', 'plantQuestItem', 'mark', 'useItem', 'visit']);
+
 // ---- Build tasks -------------------------------------------------------
 const outTasks = tasks.map((t) => {
   const objectives = (t.objectives || []).map(classify);
   const objMaps = new Set();
   for (const o of objectives) o.maps.forEach((m) => objMaps.add(m));
+  // Цели без локации в данных tarkov.dev (mapsAuto — выведенная локация, исходные maps не трогаем):
+  //  1) «убить босса/свиту» -> карты, где этот босс появляется;
+  //  2) прочие рейдовые цели квеста, у которого ВСЕ остальные цели на одной карте, -> эта карта
+  //     («Знаток Резерва»: найти экипировку в комнатах; «Санитар леса»: найти ключ Штурмана).
+  objectives.forEach((o, i) => {
+    if (o.maps.length) return;
+    const keys = (t.objectives[i].targetKeys || []).filter((k) => k !== 'Any');
+    if (o.type === 'shoot' && keys.length) {
+      const bm = [...new Set(keys.flatMap(mapsForTarget))];
+      if (bm.length) o.mapsAuto = bm;
+    }
+  });
+  const known = new Set(objectives.flatMap((o) => o.maps.length ? o.maps : o.mapsAuto || []));
+  if (known.size === 1)
+    for (const o of objectives) if (!o.maps.length && !o.mapsAuto && LOCAL_TYPES.has(o.type)) o.mapsAuto = [...known];
+  for (const o of objectives) (o.mapsAuto || []).forEach((m) => objMaps.add(m));
   if (objMaps.size === 0 && t.map) objMaps.add(mapId(t.map.name));
 
   const failedBy = (t.failConditions || [])
@@ -252,6 +288,28 @@ const outTasks = tasks.map((t) => {
     objectives,
   };
 });
+
+// ---- Квесты, пропавшие из свежей выгрузки tarkov.dev ---------------------
+// Выгрузка tarkov.dev иногда теряет квесты без удаления в игре (напр. в октябре 2026 пропали
+// 17 квестов Механика при переделке их пайплайна). Такие квесты переносим из прошлой сборки с
+// пометкой stale, чтобы у пользователей не исчезали отметки; в интерфейсе — значок «⚠».
+try {
+  const prev = JSON.parse(fs.readFileSync(path.join(ROOT, 'data', 'quests.json'), 'utf8'));
+  const have = new Set(outTasks.map((t) => t.id));
+  const today = new Date().toISOString().slice(0, 10);
+  let carried = 0;
+  for (const pt of prev.tasks || []) {
+    if (have.has(pt.id)) continue;
+    outTasks.push({ ...pt, stale: pt.stale || today });
+    carried++;
+    // предметы и торговец пропавшего квеста — тоже из прошлой сборки
+    const ids = JSON.stringify(pt.objectives).match(/[0-9a-f]{24}/g) || [];
+    for (const id of ids) if (!items[id] && prev.items[id]) items[id] = prev.items[id];
+    const ptr = (prev.traders || []).find((x) => x.id === pt.trader);
+    if (ptr && !traders[ptr.id]) traders[ptr.id] = { id: ptr.id, name: ptr.name };
+  }
+  if (carried) console.log('carried over (missing from tarkov.dev):', carried);
+} catch {}
 
 // ---- Assemble ----------------------------------------------------------
 const mapsArr = [...canonMaps.values()].filter((m) => !m.unused).sort((a, b) => a.name.localeCompare(b.name, 'ru'));
