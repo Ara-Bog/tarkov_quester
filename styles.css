@@ -854,3 +854,6 @@ body.qm-open { overflow: hidden; }
 .event-tag { font-size: 10.5px; color: #c9b4f0; border: 1px solid rgba(155,127,201,.45); border-radius: 3px; padding: 0 4px; }
 .wiki-tag { font-size: 10.5px; color: var(--txt-dim); border: 1px dashed var(--line-2); border-radius: 3px; padding: 0 4px; }
 .rm-b.ev { color: #c9b4f0; border-color: rgba(155,127,201,.5); }
+.bc-path { display: block; font-size: 11px; color: var(--txt-mut); margin-top: 2px; }
+.sv-head { margin: 4px 0 6px; font-size: 12.5px; }
+.ss-more .ss-hint { font-style: italic; }

@@ -72,7 +72,7 @@ app.js                — логика и разметка приложения
 data/quests.json      — данные квестов (+ .js — фолбэк для file://)
 data/items.json       — каталог предметов для «Списка находок» (+ .js)
 data/maps-geo.json    — гео-конфиг карт: SVG, координаты, этажи, выходы, боссы (+ .js)
-data/story-quests.json— сюжетные квесты, ведутся вручную (+ .js)
+data/story-quests.json— сюжетные главы, генерируются build/story.mjs с ру-вики (+ .js)
 data/keys.json        — справочник ключей по локациям (+ .js)
 build/fetch.mjs       — загрузка квестов с tarkov.dev -> build/tasks_raw.json
 build/transform.mjs   — преобразование -> data/quests.json
@@ -87,6 +87,7 @@ build/maps.mjs        — гео-конфиг карт -> data/maps-geo.json
 ```
 node build/fetch.mjs       # скачать квесты с json.tarkov.dev -> build/tasks_raw.json
 node build/wiki.mjs        # квесты, которых нет в tarkov.dev, с ру-вики -> build/wiki_raw.json
+node build/story.mjs       # сюжетные главы с ру-вики -> data/story-quests.json
 node build/transform.mjs   # пересобрать data/quests.json
 node build/items.mjs       # пересобрать каталог data/items.json
 node build/maps.mjs        # пересобрать гео-конфиг data/maps-geo.json

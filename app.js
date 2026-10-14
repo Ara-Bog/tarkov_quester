@@ -2618,25 +2618,47 @@ async function loadStoryData() {
 	try {
 		const r = await fetch("data/story-quests.json", { cache: "no-cache" });
 		if (r.ok) {
-			storyData = await r.json();
+			storyData = prepStory(await r.json());
 			return storyData;
 		}
 	} catch {}
 	if (window.__STORY__) {
-		storyData = window.__STORY__;
+		storyData = prepStory(window.__STORY__);
 		return storyData;
 	}
 	try {
 		await injectScript("data/story-quests.js");
-		storyData = window.__STORY__ || { quests: [] };
+		storyData = prepStory(window.__STORY__ || { quests: [] });
 	} catch {
 		storyData = { quests: [] };
 	}
 	return storyData;
 }
-// стадия выполнена, если выполнены все её ОБЯЗАТЕЛЬНЫЕ цели (необязательные не блокируют)
+// Подготовка глав после загрузки: у стадий с выбором варианта — ключ выбора в state.storyBranch
+// («глава#стадия»); прежние id концовок переводим по branchAliases (после перегенерации с вики).
+function prepStory(d) {
+	for (const q of (d && d.quests) || []) {
+		const all = [...(q.stages || []), ...(q.branches || []).flatMap((b) => b.stages)];
+		for (const st of all) if (st.variants) st._vkey = `${q.id}#${st.id}`;
+		const al = q.branchAliases && q.branchAliases[state.storyBranch[q.id]];
+		if (al) {
+			state.storyBranch[q.id] = al;
+			persistStory();
+		}
+	}
+	return d;
+}
+// выбранный вариант стадии «Развилка по условию» (или undefined)
+const stageVariant = (st) =>
+	st.variants && st.variants.find((v) => v.id === state.storyBranch[st._vkey]);
+// задачи стадии с учётом выбранного варианта
+const stageObjectives = (st) =>
+	st.variants ? (stageVariant(st) || { objectives: [] }).objectives : st.objectives;
+// стадия выполнена, если выполнены все её ОБЯЗАТЕЛЬНЫЕ цели (необязательные не блокируют);
+// стадия-развилка — когда выбран вариант и выполнены его обязательные цели
 function storyStageDone(stage) {
-	return stage.objectives.every(
+	if (stage.variants && !stageVariant(stage)) return false;
+	return stageObjectives(stage).every(
 		(o) => o.optional || state.storyDone.has(o.id),
 	);
 }
@@ -2663,25 +2685,53 @@ function storyObjHtml(o) {
 }
 // отрисовка списка стадий; baseNum — смещение нумерации (для веток продолжаем нумерацию после общих стадий)
 function storyStagesHtml(stages, act, baseNum) {
-	return stages
-		.map((st, i) => {
-			const n = baseNum + i + 1;
-			const locked = i > act,
-				isDone = i < act;
-			const badge = isDone
-				? '<span class="ss-badge done">✓</span>'
-				: i === act
-					? '<span class="ss-badge cur">текущая</span>'
-					: '<span class="ss-badge lock">🔒</span>';
-			const head = `<span class="ss-no">Стадия ${n}</span> <span class="ss-title">${esc(st.title || "")}</span> ${badge}`;
-			if (locked)
-				return `<div class="ss locked"><div class="ss-head">${head}</div><div class="ss-hint">Откроется после выполнения стадии ${n - 1}.</div></div>`;
-			const objs = `<ul class="so-list">${st.objectives.map(storyObjHtml).join("")}</ul>`;
-			if (isDone)
-				return `<details class="ss done"><summary class="ss-head">${head}</summary>${objs}</details>`;
-			return `<div class="ss cur"><div class="ss-head">${head}</div>${objs}</div>`;
-		})
-		.join("");
+	// закрытые стадии: показываем только ближайшую, остальные — одной строкой (у длинных глав их десятки)
+	const lockedRest = Math.max(0, stages.length - act - 2);
+	const plural = (n) =>
+		n % 10 === 1 && n % 100 !== 11
+			? "стадия"
+			: [2, 3, 4].includes(n % 10) && ![12, 13, 14].includes(n % 100)
+				? "стадии"
+				: "стадий";
+	return (
+		stages
+			.map((st, i) => {
+				const n = baseNum + i + 1;
+				const locked = i > act,
+					isDone = i < act;
+				if (locked && i > act + 1) return "";
+				const badge = isDone
+					? '<span class="ss-badge done">✓</span>'
+					: i === act
+						? '<span class="ss-badge cur">текущая</span>'
+						: '<span class="ss-badge lock">🔒</span>';
+				const head = `<span class="ss-no">Стадия ${n}</span> <span class="ss-title">${esc(st.title || "")}</span> ${badge}`;
+				if (locked)
+					return `<div class="ss locked"><div class="ss-head">${head}</div><div class="ss-hint">Откроется после выполнения стадии ${n - 1}.</div></div>`;
+				let body;
+				if (st.variants) {
+					const v = stageVariant(st);
+					if (!v)
+						// развилка по условию: игрок выбирает, какой случай у него
+						body = `<div class="branch-choose sv-choose"><div class="bc-title">⑂ Какой у вас случай?</div><div class="bc-opts">${st.variants
+							.map(
+								(x) =>
+									`<button class="bc-opt" data-branch="${esc(st._vkey)}|${x.id}"><span class="bc-lab">${esc(x.label)}</span><span class="bc-cnt">${x.objectives.length ? x.objectives.length + " " + (x.objectives.length % 10 === 1 && x.objectives.length % 100 !== 11 ? "задача" : [2, 3, 4].includes(x.objectives.length % 10) && ![12, 13, 14].includes(x.objectives.length % 100) ? "задачи" : "задач") + " →" : "пропустить →"}</span></button>`,
+							)
+							.join("")}</div></div>`;
+					else
+						body = `<div class="bc-head sv-head">Вариант: <b>${esc(v.label)}</b>${isDone ? "" : ` <button class="bc-switch" data-branch="${esc(st._vkey)}|">← сменить</button>`}</div><ul class="so-list">${v.objectives.map(storyObjHtml).join("")}</ul>`;
+				} else
+					body = `<ul class="so-list">${st.objectives.map(storyObjHtml).join("")}</ul>`;
+				if (isDone)
+					return `<details class="ss done"><summary class="ss-head">${head}</summary>${body}</details>`;
+				return `<div class="ss cur"><div class="ss-head">${head}</div>${body}</div>`;
+			})
+			.join("") +
+		(lockedRest
+			? `<div class="ss locked ss-more"><div class="ss-hint">…и ещё ${lockedRest} ${plural(lockedRest)} — откроются по мере прохождения</div></div>`
+			: "")
+	);
 }
 function storyQuestHtml(q) {
 	const stages = q.stages || [];
@@ -2726,7 +2776,7 @@ function storyQuestHtml(q) {
 				html += `<div class="branch-choose"><div class="bc-title">⑂ ${esc(q.branchPoint || "Развилка — выберите путь")}</div><div class="bc-opts">${branches
 					.map(
 						(b) =>
-							`<button class="bc-opt" data-branch="${q.id}|${b.id}"><span class="bc-lab">${esc(b.label)}</span><span class="bc-cnt">${b.stages.length} стадий →</span></button>`,
+							`<button class="bc-opt" data-branch="${q.id}|${b.id}"><span class="bc-lab">${esc(b.label)}</span>${b.path ? `<span class="bc-path">${esc(b.path.filter((x) => !/^Одинаково/.test(x)).join(" → "))}</span>` : ""}<span class="bc-cnt">${b.stages.length} стадий →</span></button>`,
 					)
 					.join("")}</div></div>`;
 				finished = false;
@@ -2765,12 +2815,12 @@ function renderStory() {
 function storyActiveObjectives(q) {
 	const stages = q.stages || [];
 	const cAct = stagesActiveIndex(stages);
-	if (cAct < stages.length) return stages[cAct].objectives;
+	if (cAct < stages.length) return stageObjectives(stages[cAct]);
 	const branches = q.branches || [];
 	const br = branches.find((b) => b.id === state.storyBranch[q.id]);
 	if (br) {
 		const bAct = stagesActiveIndex(br.stages);
-		if (bAct < br.stages.length) return br.stages[bAct].objectives;
+		if (bAct < br.stages.length) return stageObjectives(br.stages[bAct]);
 	}
 	return [];
 }
